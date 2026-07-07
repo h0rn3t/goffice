@@ -26,6 +26,18 @@ func TestLayoutTable_ColumnOffsets(t *testing.T) {
 	}
 }
 
+func TestLayoutTable_ColumnOffsetsIncludeTableIndent(t *testing.T) {
+	tbl := document.Table{ColumnWidths: []float64{50, 30, 20}, IndentPt: 100}
+	tl := layoutTable(&fakeRenderer{}, tbl)
+
+	want := []float64{100, 150, 180}
+	for i, w := range want {
+		if tl.colOffsets[i] != w {
+			t.Errorf("colOffsets[%d] = %.2f, want %.2f", i, tl.colOffsets[i], w)
+		}
+	}
+}
+
 func TestRenderTable_CellsAtColumnPositions(t *testing.T) {
 	f := &fakeRenderer{}
 	tbl := document.Table{
@@ -37,7 +49,7 @@ func TestRenderTable_CellsAtColumnPositions(t *testing.T) {
 			),
 		},
 	}
-	renderTable(f, tbl, marginPt, marginPt, true)
+	renderTable(f, tbl, testPage, marginPt, true)
 
 	if len(f.draws) != 2 {
 		t.Fatalf("expected 2 draws, got %d", len(f.draws))
@@ -85,7 +97,7 @@ func TestRenderTable_HorizontalMergeSpansCombinedWidthNoInteriorBorder(t *testin
 			}),
 		},
 	}
-	renderTable(f, tbl, marginPt, marginPt, true)
+	renderTable(f, tbl, testPage, marginPt, true)
 
 	if len(f.strokes) != 1 {
 		t.Fatalf("expected exactly one border stroke (no interior border at the merge boundary), got %d", len(f.strokes))
@@ -105,7 +117,7 @@ func TestRenderTable_VerticalMergeSpansCombinedHeightAndSkipsContinueDraw(t *tes
 	}
 
 	f := &fakeRenderer{}
-	renderTable(f, tbl, marginPt, marginPt, true)
+	renderTable(f, tbl, testPage, marginPt, true)
 	if len(f.draws) != 1 {
 		t.Fatalf("expected exactly one draw (the vMerge-continue cell must not redraw), got %d", len(f.draws))
 	}
@@ -124,7 +136,7 @@ func TestRenderTable_CellShadingFills(t *testing.T) {
 		ColumnWidths: []float64{100},
 		Rows:         []document.Row{mkRow(document.Cell{ColSpan: 1, Shading: "#D9D9D9"})},
 	}
-	renderTable(f, tbl, marginPt, marginPt, true)
+	renderTable(f, tbl, testPage, marginPt, true)
 
 	if len(f.fills) != 1 {
 		t.Fatalf("expected one fill call, got %d", len(f.fills))
@@ -147,7 +159,7 @@ func TestRenderTable_BordersPerSide(t *testing.T) {
 		ColumnWidths: []float64{100},
 		Rows:         []document.Row{mkRow(document.Cell{ColSpan: 1, Borders: borders})},
 	}
-	renderTable(f, tbl, marginPt, marginPt, true)
+	renderTable(f, tbl, testPage, marginPt, true)
 
 	if len(f.strokes) != 2 {
 		t.Fatalf("expected 2 border strokes (top+bottom only; left/right undeclared), got %d", len(f.strokes))
@@ -170,13 +182,67 @@ func TestRenderTable_PaginatesWithoutSplittingRows(t *testing.T) {
 		}))
 	}
 	tbl := document.Table{ColumnWidths: []float64{100}, Rows: rows}
-	renderTable(f, tbl, marginPt, marginPt, true)
+	renderTable(f, tbl, testPage, marginPt, true)
 
 	if f.page < 2 {
 		t.Fatalf("expected the table to paginate across multiple pages, got %d", f.page)
 	}
 	if len(f.draws) != 200 {
 		t.Fatalf("expected 200 draws (one per row, none split), got %d", len(f.draws))
+	}
+}
+
+func TestRenderTable_CellParagraphIndentShiftsText(t *testing.T) {
+	f := &fakeRenderer{}
+	indented := document.Cell{
+		ColSpan:    1,
+		Paragraphs: []document.Paragraph{paraWithIndent(document.AlignLeft, document.Indent{LeftPt: 20}, run("hi", 12))},
+	}
+	tbl := document.Table{
+		ColumnWidths: []float64{100},
+		Rows:         []document.Row{mkRow(indented)},
+	}
+	renderTable(f, tbl, testPage, marginPt, true)
+
+	if len(f.draws) != 1 {
+		t.Fatalf("expected 1 draw, got %d", len(f.draws))
+	}
+	if want := marginPt + cellPaddingPt + 20.0; f.draws[0].x != want {
+		t.Fatalf("indented cell text x = %.2f, want %.2f", f.draws[0].x, want)
+	}
+}
+
+func TestRenderTable_NestedTableIndentIsIndependentOfParent(t *testing.T) {
+	f := &fakeRenderer{}
+	inner := document.Table{
+		IndentPt:     20,
+		ColumnWidths: []float64{50},
+		Rows: []document.Row{mkRow(document.Cell{
+			ColSpan:    1,
+			Paragraphs: []document.Paragraph{para(document.AlignLeft, false, run("inner", 12))},
+		})},
+	}
+	outer := document.Table{
+		IndentPt:     40,
+		ColumnWidths: []float64{100},
+		Rows: []document.Row{mkRow(document.Cell{
+			ColSpan:    1,
+			Paragraphs: []document.Paragraph{para(document.AlignLeft, false, run("outer", 12))},
+			Nested:     &inner,
+		})},
+	}
+	renderTable(f, outer, testPage, marginPt, true)
+
+	if len(f.draws) != 2 {
+		t.Fatalf("expected 2 draws (outer cell + nested table), got %d", len(f.draws))
+	}
+	wantOuterX := marginPt + 40 + cellPaddingPt
+	if f.draws[0].x != wantOuterX {
+		t.Fatalf("outer cell text x = %.2f, want %.2f (shifted by the outer table's own indent)", f.draws[0].x, wantOuterX)
+	}
+	wantInnerX := f.draws[0].x + cellPaddingPt + 20
+	if f.draws[1].x != wantInnerX {
+		t.Fatalf("nested cell text x = %.2f, want %.2f (own indent, additional to and independent of the parent's)", f.draws[1].x, wantInnerX)
 	}
 }
 
@@ -197,7 +263,7 @@ func TestRenderTable_NestedTableRendersWithinParentCell(t *testing.T) {
 			Nested:     &inner,
 		})},
 	}
-	renderTable(f, outer, marginPt, marginPt, true)
+	renderTable(f, outer, testPage, marginPt, true)
 
 	if len(f.draws) != 2 {
 		t.Fatalf("expected 2 draws (outer cell + nested table), got %d", len(f.draws))

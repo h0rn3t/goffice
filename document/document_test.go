@@ -160,6 +160,137 @@ func TestCenteredParagraph(t *testing.T) {
 	}
 }
 
+func TestParagraph_IndentLeftAndRight(t *testing.T) {
+	body := `<w:p><w:pPr><w:ind w:left="720" w:right="360"/></w:pPr><w:r><w:t>x</w:t></w:r></w:p>`
+	doc := mustOpen(t, body)
+
+	ind := paragraphs(t, doc)[0].Props.Indent
+	if ind.LeftPt != 36 || ind.RightPt != 18 {
+		t.Fatalf("indent = %+v, want {LeftPt:36 RightPt:18}", ind)
+	}
+}
+
+func TestParagraph_FirstLineIndentIsPositive(t *testing.T) {
+	body := `<w:p><w:pPr><w:ind w:firstLine="360"/></w:pPr><w:r><w:t>x</w:t></w:r></w:p>`
+	doc := mustOpen(t, body)
+
+	if got, want := paragraphs(t, doc)[0].Props.Indent.FirstLineOffsetPt, 18.0; got != want {
+		t.Fatalf("FirstLineOffsetPt = %v, want %v", got, want)
+	}
+}
+
+func TestParagraph_HangingIndentIsNegative(t *testing.T) {
+	body := `<w:p><w:pPr><w:ind w:hanging="360"/></w:pPr><w:r><w:t>x</w:t></w:r></w:p>`
+	doc := mustOpen(t, body)
+
+	if got, want := paragraphs(t, doc)[0].Props.Indent.FirstLineOffsetPt, -18.0; got != want {
+		t.Fatalf("FirstLineOffsetPt = %v, want %v", got, want)
+	}
+}
+
+func TestParagraph_NoIndentIsZero(t *testing.T) {
+	doc := mustOpen(t, `<w:p><w:r><w:t>x</w:t></w:r></w:p>`)
+
+	ind := paragraphs(t, doc)[0].Props.Indent
+	if ind != (document.Indent{}) {
+		t.Fatalf("indent = %+v, want the zero value", ind)
+	}
+}
+
+func TestParagraph_SpacingBeforeAndAfter(t *testing.T) {
+	body := `<w:p><w:pPr><w:spacing w:before="240" w:after="120"/></w:pPr><w:r><w:t>x</w:t></w:r></w:p>`
+	doc := mustOpen(t, body)
+
+	sp := paragraphs(t, doc)[0].Props.Spacing
+	if sp.BeforePt != 12 || sp.AfterPt != 6 {
+		t.Fatalf("spacing = %+v, want {BeforePt:12 AfterPt:6}", sp)
+	}
+}
+
+func TestParagraph_NoSpacingIsZero(t *testing.T) {
+	doc := mustOpen(t, `<w:p><w:r><w:t>x</w:t></w:r></w:p>`)
+
+	sp := paragraphs(t, doc)[0].Props.Spacing
+	if sp != (document.Spacing{}) {
+		t.Fatalf("spacing = %+v, want the zero value", sp)
+	}
+}
+
+func TestParagraph_StyleSuppliesSpacingWhenNoInline(t *testing.T) {
+	body := `<w:p><w:pPr><w:pStyle w:val="BodyText"/></w:pPr><w:r><w:t>x</w:t></w:r></w:p>`
+	styles := `<w:style w:type="paragraph" w:styleId="BodyText">` +
+		`<w:pPr><w:spacing w:before="240" w:after="120"/></w:pPr></w:style>`
+	doc := mustOpenWithStyles(t, body, styles)
+
+	sp := paragraphs(t, doc)[0].Props.Spacing
+	if sp.BeforePt != 12 || sp.AfterPt != 6 {
+		t.Fatalf("spacing = %+v, want {BeforePt:12 AfterPt:6} from style", sp)
+	}
+}
+
+func TestParagraph_InlineSpacingOverridesStyle(t *testing.T) {
+	body := `<w:p><w:pPr><w:pStyle w:val="BodyText"/>` +
+		`<w:spacing w:before="60" w:after="60"/></w:pPr><w:r><w:t>x</w:t></w:r></w:p>`
+	styles := `<w:style w:type="paragraph" w:styleId="BodyText">` +
+		`<w:pPr><w:spacing w:before="240" w:after="120"/></w:pPr></w:style>`
+	doc := mustOpenWithStyles(t, body, styles)
+
+	sp := paragraphs(t, doc)[0].Props.Spacing
+	if sp.BeforePt != 3 || sp.AfterPt != 3 {
+		t.Fatalf("spacing = %+v, want {BeforePt:3 AfterPt:3} (inline wins over style)", sp)
+	}
+}
+
+func TestParagraph_StyleSpacingResolvesThroughBasedOnChain(t *testing.T) {
+	body := `<w:p><w:pPr><w:pStyle w:val="Child"/></w:pPr><w:r><w:t>x</w:t></w:r></w:p>`
+	styles := `<w:style w:type="paragraph" w:styleId="Child"><w:basedOn w:val="Parent"/></w:style>` +
+		`<w:style w:type="paragraph" w:styleId="Parent">` +
+		`<w:pPr><w:spacing w:before="240" w:after="120"/></w:pPr></w:style>`
+	doc := mustOpenWithStyles(t, body, styles)
+
+	sp := paragraphs(t, doc)[0].Props.Spacing
+	if sp.BeforePt != 12 || sp.AfterPt != 6 {
+		t.Fatalf("spacing = %+v, want {BeforePt:12 AfterPt:6} (resolved from basedOn ancestor)", sp)
+	}
+}
+
+func TestParagraph_DocDefaultsSupplySpacing(t *testing.T) {
+	body := `<w:p><w:r><w:t>x</w:t></w:r></w:p>`
+	styles := `<w:docDefaults><w:pPrDefault><w:pPr>` +
+		`<w:spacing w:after="200"/></w:pPr></w:pPrDefault></w:docDefaults>`
+	doc := mustOpenWithStyles(t, body, styles)
+
+	sp := paragraphs(t, doc)[0].Props.Spacing
+	if sp.BeforePt != 0 || sp.AfterPt != 10 {
+		t.Fatalf("spacing = %+v, want {BeforePt:0 AfterPt:10} from docDefaults", sp)
+	}
+}
+
+func TestParagraph_NoSpacingAnywhereIsZero(t *testing.T) {
+	body := `<w:p><w:pPr><w:pStyle w:val="BodyText"/></w:pPr><w:r><w:t>x</w:t></w:r></w:p>`
+	styles := `<w:style w:type="paragraph" w:styleId="BodyText"><w:pPr><w:jc w:val="center"/></w:pPr></w:style>`
+	doc := mustOpenWithStyles(t, body, styles)
+
+	sp := paragraphs(t, doc)[0].Props.Spacing
+	if sp != (document.Spacing{}) {
+		t.Fatalf("spacing = %+v, want the zero value (no inline, no style spacing, no docDefaults)", sp)
+	}
+}
+
+func TestParagraph_CellParagraphResolvesStyleSpacing(t *testing.T) {
+	body := `<w:tbl><w:tr><w:tc>` +
+		`<w:p><w:pPr><w:pStyle w:val="BodyText"/></w:pPr><w:r><w:t>cell</w:t></w:r></w:p>` +
+		`</w:tc></w:tr></w:tbl>`
+	styles := `<w:style w:type="paragraph" w:styleId="BodyText">` +
+		`<w:pPr><w:spacing w:before="240" w:after="120"/></w:pPr></w:style>`
+	doc := mustOpenWithStyles(t, body, styles)
+
+	sp := singleTable(t, doc).Rows[0].Cells[0].Paragraphs[0].Props.Spacing
+	if sp.BeforePt != 12 || sp.AfterPt != 6 {
+		t.Fatalf("cell paragraph spacing = %+v, want {BeforePt:12 AfterPt:6} from style", sp)
+	}
+}
+
 func TestExplicitPageBreak(t *testing.T) {
 	body := `<w:p><w:r><w:t>page1</w:t></w:r></w:p>` +
 		`<w:p><w:r><w:br w:type="page"/></w:r><w:r><w:t>page2</w:t></w:r></w:p>`
@@ -395,6 +526,160 @@ func TestTable_StyleSuppliesCellShading(t *testing.T) {
 
 	if got, want := singleTable(t, doc).Rows[0].Cells[0].Shading, "#D9D9D9"; got != want {
 		t.Fatalf("shading = %q, want %q", got, want)
+	}
+}
+
+func TestTable_InlineIndent(t *testing.T) {
+	body := `<w:tbl><w:tblPr><w:tblInd w:w="720" w:type="dxa"/></w:tblPr>` +
+		`<w:tr><w:tc><w:p/></w:tc></w:tr></w:tbl>`
+	doc := mustOpen(t, body)
+
+	if got, want := singleTable(t, doc).IndentPt, 36.0; got != want {
+		t.Fatalf("IndentPt = %v, want %v", got, want)
+	}
+}
+
+func TestTable_StyleSuppliesIndentWhenNoInline(t *testing.T) {
+	body := `<w:tbl><w:tblPr><w:tblStyle w:val="Indented"/></w:tblPr>` +
+		`<w:tr><w:tc><w:p/></w:tc></w:tr></w:tbl>`
+	styles := `<w:style w:type="table" w:styleId="Indented">` +
+		`<w:tblPr><w:tblInd w:w="720" w:type="dxa"/></w:tblPr>` +
+		`</w:style>`
+	doc := mustOpenWithStyles(t, body, styles)
+
+	if got, want := singleTable(t, doc).IndentPt, 36.0; got != want {
+		t.Fatalf("IndentPt = %v, want %v", got, want)
+	}
+}
+
+func TestTable_InlineIndentOverridesStyle(t *testing.T) {
+	body := `<w:tbl><w:tblPr><w:tblStyle w:val="Indented"/><w:tblInd w:w="360" w:type="dxa"/></w:tblPr>` +
+		`<w:tr><w:tc><w:p/></w:tc></w:tr></w:tbl>`
+	styles := `<w:style w:type="table" w:styleId="Indented">` +
+		`<w:tblPr><w:tblInd w:w="720" w:type="dxa"/></w:tblPr>` +
+		`</w:style>`
+	doc := mustOpenWithStyles(t, body, styles)
+
+	if got, want := singleTable(t, doc).IndentPt, 18.0; got != want {
+		t.Fatalf("IndentPt = %v, want %v (inline wins over style)", got, want)
+	}
+}
+
+func TestTable_NoIndentIsZero(t *testing.T) {
+	doc := mustOpen(t, `<w:tbl><w:tr><w:tc><w:p/></w:tc></w:tr></w:tbl>`)
+
+	if got, want := singleTable(t, doc).IndentPt, 0.0; got != want {
+		t.Fatalf("IndentPt = %v, want %v", got, want)
+	}
+}
+
+func TestLineBreak_BetweenTextSegments(t *testing.T) {
+	body := `<w:p><w:r><w:t>A</w:t><w:br/><w:t>B</w:t></w:r></w:p>`
+	runs := paragraphs(t, mustOpen(t, body))[0].Runs
+	if len(runs) != 3 {
+		t.Fatalf("run count = %d, want 3 (A, break, B)", len(runs))
+	}
+	if runs[0].Text != "A" || runs[0].LineBreak {
+		t.Fatalf("run[0] = %+v, want text A", runs[0])
+	}
+	if !runs[1].LineBreak || runs[1].Text != "" {
+		t.Fatalf("run[1] = %+v, want a line break", runs[1])
+	}
+	if runs[2].Text != "B" || runs[2].LineBreak {
+		t.Fatalf("run[2] = %+v, want text B", runs[2])
+	}
+}
+
+func TestLineBreak_PageBreakIsNotALineBreak(t *testing.T) {
+	body := `<w:p><w:r><w:br w:type="page"/><w:t>x</w:t></w:r></w:p>`
+	p := paragraphs(t, mustOpen(t, body))[0]
+	if !p.Props.PageBreak {
+		t.Fatal("expected PageBreak to be set by <w:br w:type=\"page\"/>")
+	}
+	for i, r := range p.Runs {
+		if r.LineBreak {
+			t.Fatalf("run[%d] is a line break; a page break must not produce one", i)
+		}
+	}
+}
+
+func TestLineSpacing_AutoIsMultiple(t *testing.T) {
+	body := `<w:p><w:pPr><w:spacing w:line="276" w:lineRule="auto"/></w:pPr><w:r><w:t>x</w:t></w:r></w:p>`
+	sp := paragraphs(t, mustOpen(t, body))[0].Props.Spacing
+	if sp.LineRule != document.LineSpacingMultiple || sp.LineValue != 1.15 {
+		t.Fatalf("line spacing = {%v %v}, want {Multiple 1.15}", sp.LineRule, sp.LineValue)
+	}
+}
+
+func TestLineSpacing_ExactInPoints(t *testing.T) {
+	body := `<w:p><w:pPr><w:spacing w:line="360" w:lineRule="exact"/></w:pPr><w:r><w:t>x</w:t></w:r></w:p>`
+	sp := paragraphs(t, mustOpen(t, body))[0].Props.Spacing
+	if sp.LineRule != document.LineSpacingExact || sp.LineValue != 18 {
+		t.Fatalf("line spacing = {%v %v}, want {Exact 18}", sp.LineRule, sp.LineValue)
+	}
+}
+
+func TestLineSpacing_FromDocDefaults(t *testing.T) {
+	body := `<w:p><w:r><w:t>x</w:t></w:r></w:p>`
+	styles := `<w:docDefaults><w:pPrDefault><w:pPr>` +
+		`<w:spacing w:line="276" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults>`
+	sp := paragraphs(t, mustOpenWithStyles(t, body, styles))[0].Props.Spacing
+	if sp.LineRule != document.LineSpacingMultiple || sp.LineValue != 1.15 {
+		t.Fatalf("line spacing = {%v %v}, want {Multiple 1.15} from docDefaults", sp.LineRule, sp.LineValue)
+	}
+}
+
+func TestLineSpacing_NoneIsSingle(t *testing.T) {
+	sp := paragraphs(t, mustOpen(t, `<w:p><w:r><w:t>x</w:t></w:r></w:p>`))[0].Props.Spacing
+	if sp.LineRule != document.LineSpacingSingle || sp.LineValue != 0 {
+		t.Fatalf("line spacing = {%v %v}, want {Single 0}", sp.LineRule, sp.LineValue)
+	}
+}
+
+func TestPageGeometry_FromPgSz(t *testing.T) {
+	body := `<w:p><w:r><w:t>x</w:t></w:r></w:p>` +
+		`<w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr>`
+	doc := mustOpen(t, body)
+
+	if g := doc.Geometry; g.WidthPt != 612 || g.HeightPt != 792 {
+		t.Fatalf("page size = %v × %v, want 612 × 792", g.WidthPt, g.HeightPt)
+	}
+}
+
+func TestPageGeometry_FromPgMar(t *testing.T) {
+	body := `<w:p><w:r><w:t>x</w:t></w:r></w:p>` +
+		`<w:sectPr><w:pgMar w:top="1440" w:right="1800" w:bottom="1440" w:left="1800"/></w:sectPr>`
+	doc := mustOpen(t, body)
+
+	g := doc.Geometry
+	if g.MarginTopPt != 72 || g.MarginBottomPt != 72 || g.MarginLeftPt != 90 || g.MarginRightPt != 90 {
+		t.Fatalf("margins = %+v, want top/bottom 72, left/right 90", g)
+	}
+}
+
+func TestPageGeometry_DefaultWhenAbsent(t *testing.T) {
+	doc := mustOpen(t, `<w:p><w:r><w:t>x</w:t></w:r></w:p>`)
+
+	g := doc.Geometry
+	if g.WidthPt != 595.28 || g.HeightPt != 841.89 {
+		t.Fatalf("default page size = %v × %v, want 595.28 × 841.89 (A4)", g.WidthPt, g.HeightPt)
+	}
+	if g.MarginTopPt != 72 || g.MarginRightPt != 72 || g.MarginBottomPt != 72 || g.MarginLeftPt != 72 {
+		t.Fatalf("default margins = %+v, want 72 on all sides", g)
+	}
+}
+
+func TestPageGeometry_PartialMarginsDefault(t *testing.T) {
+	body := `<w:p><w:r><w:t>x</w:t></w:r></w:p>` +
+		`<w:sectPr><w:pgMar w:left="1800"/></w:sectPr>`
+	doc := mustOpen(t, body)
+
+	g := doc.Geometry
+	if g.MarginLeftPt != 90 {
+		t.Fatalf("left margin = %v, want 90 (declared)", g.MarginLeftPt)
+	}
+	if g.MarginTopPt != 72 || g.MarginRightPt != 72 || g.MarginBottomPt != 72 {
+		t.Fatalf("undeclared margins = %+v, want 72 default", g)
 	}
 }
 

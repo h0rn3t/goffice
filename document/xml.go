@@ -22,6 +22,9 @@ type xmlDocument struct {
 // (e.g. sectPr) are skipped without error.
 type xmlBody struct {
 	Children []xmlBodyChild
+	// SectPr is the body-level section geometry (w:sectPr), or nil when the
+	// document declares none.
+	SectPr *xmlSectPr
 }
 
 // xmlBodyChild is one body-level child: exactly one of Paragraph or Table is
@@ -63,6 +66,12 @@ func (b *xmlBody) UnmarshalXML(d *xml.Decoder, _ xml.StartElement) error {
 				return err
 			}
 			b.Children = append(b.Children, xmlBodyChild{Table: &t})
+		case "sectPr":
+			var s xmlSectPr
+			if err := d.DecodeElement(&s, &start); err != nil {
+				return err
+			}
+			b.SectPr = &s
 		default:
 			if err := d.Skip(); err != nil {
 				return err
@@ -71,20 +80,126 @@ func (b *xmlBody) UnmarshalXML(d *xml.Decoder, _ xml.StartElement) error {
 	}
 }
 
+// xmlSectPr is the body-level <w:sectPr> section geometry. Only page size
+// (w:pgSz) and margins (w:pgMar) are modeled; columns, headers/footers,
+// gutter, and section-type breaks are out of scope - see design.md.
+type xmlSectPr struct {
+	PgSz  *xmlPgSz  `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main pgSz"`
+	PgMar *xmlPgMar `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main pgMar"`
+}
+
+// xmlPgSz is <w:pgSz>'s w:w/w:h page dimensions, in dxa (twentieths of a point).
+type xmlPgSz struct {
+	W string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main w,attr"`
+	H string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main h,attr"`
+}
+
+// xmlPgMar is <w:pgMar>'s four page margins, in dxa. w:header/w:footer/w:gutter
+// are out of scope.
+type xmlPgMar struct {
+	Top    string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main top,attr"`
+	Right  string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main right,attr"`
+	Bottom string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main bottom,attr"`
+	Left   string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main left,attr"`
+}
+
 type xmlParagraph struct {
 	Props *xmlPPr  `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main pPr"`
 	Runs  []xmlRun `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main r"`
 }
 
 type xmlPPr struct {
-	Jc              *xmlVal   `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main jc"`
-	PageBreakBefore *xmlOnOff `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main pageBreakBefore"`
+	PStyle          *xmlVal      `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main pStyle"`
+	Jc              *xmlVal      `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main jc"`
+	PageBreakBefore *xmlOnOff    `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main pageBreakBefore"`
+	Ind             *xmlInd      `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main ind"`
+	Spacing         *xmlPSpacing `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main spacing"`
 }
 
+// xmlInd is <w:ind>: w:left/w:right/w:firstLine/w:hanging, all in dxa
+// (twentieths of a point). w:start/w:end (the RTL-aware aliases) are out of
+// scope - see design.md.
+type xmlInd struct {
+	Left      string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main left,attr"`
+	Right     string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main right,attr"`
+	FirstLine string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main firstLine,attr"`
+	Hanging   string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main hanging,attr"`
+}
+
+// xmlPSpacing is <w:spacing>'s w:before/w:after (space around the paragraph)
+// and w:line/w:lineRule (spacing between lines within it), all in dxa. The
+// AutoSpacing flags are out of scope - see design.md.
+type xmlPSpacing struct {
+	Before   string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main before,attr"`
+	After    string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main after,attr"`
+	Line     string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main line,attr"`
+	LineRule string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main lineRule,attr"`
+}
+
+// xmlRun captures its rPr plus an ordered sequence of text and break children
+// via a custom UnmarshalXML (encoding/xml's separate slices would lose the
+// document order of <w:t> and <w:br>, which matters for in-paragraph line
+// breaks). Unsupported run children (e.g. <w:tab>) are skipped without error.
 type xmlRun struct {
-	Props  *xmlRPr   `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main rPr"`
-	Texts  []xmlText `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main t"`
-	Breaks []xmlBr   `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main br"`
+	Props   *xmlRPr
+	Content []xmlRunContent
+}
+
+// xmlRunContent is one ordered item of a run: exactly one of Text or Break is
+// non-nil.
+type xmlRunContent struct {
+	Text  *string
+	Break *xmlBr
+}
+
+func (r *xmlRun) UnmarshalXML(d *xml.Decoder, _ xml.StartElement) error {
+	for {
+		tok, err := d.Token()
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+		start, ok := tok.(xml.StartElement)
+		if !ok {
+			if _, end := tok.(xml.EndElement); end {
+				return nil // </w:r>: children were consumed by DecodeElement/Skip
+			}
+			continue
+		}
+		if start.Name.Space != wordNS {
+			if err := d.Skip(); err != nil {
+				return err
+			}
+			continue
+		}
+		switch start.Name.Local {
+		case "rPr":
+			var p xmlRPr
+			if err := d.DecodeElement(&p, &start); err != nil {
+				return err
+			}
+			r.Props = &p
+		case "t":
+			var txt xmlText
+			if err := d.DecodeElement(&txt, &start); err != nil {
+				return err
+			}
+			s := txt.Value
+			r.Content = append(r.Content, xmlRunContent{Text: &s})
+		case "br":
+			var b xmlBr
+			if err := d.DecodeElement(&b, &start); err != nil {
+				return err
+			}
+			r.Content = append(r.Content, xmlRunContent{Break: &b})
+		default:
+			if err := d.Skip(); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 type xmlRPr struct {
@@ -141,6 +256,14 @@ type xmlTable struct {
 type xmlTblPr struct {
 	StyleID *xmlVal     `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblStyle"`
 	Borders *xmlBorders `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblBorders"`
+	Ind     *xmlTblInd  `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblInd"`
+}
+
+// xmlTblInd is <w:tblInd>: the table's own left indent from its containing
+// frame, in dxa. w:type is not distinguished (the schema only really uses
+// "dxa" in practice) - see design.md.
+type xmlTblInd struct {
+	W string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main w,attr"`
 }
 
 type xmlTblGrid struct {
@@ -206,7 +329,19 @@ type xmlBorder struct {
 // plus its w:basedOn parent. Region-specific w:tblStylePr overrides (banded
 // rows/columns, first/last row or column) are out of scope - see design.md.
 type xmlStyles struct {
-	Styles []xmlStyle `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main style"`
+	DocDefaults *xmlDocDefaults `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main docDefaults"`
+	Styles      []xmlStyle      `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main style"`
+}
+
+// xmlDocDefaults is <w:docDefaults>; only its paragraph-property default
+// (w:pPrDefault/w:pPr, reusing xmlPPr) is modeled - the document-wide spacing
+// fallback beneath any paragraph style. w:rPrDefault is out of scope.
+type xmlDocDefaults struct {
+	PPrDefault *xmlPPrDefault `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main pPrDefault"`
+}
+
+type xmlPPrDefault struct {
+	PPr *xmlPPr `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main pPr"`
 }
 
 type xmlStyle struct {
@@ -215,13 +350,15 @@ type xmlStyle struct {
 	BasedOn *xmlVal   `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main basedOn"`
 	TblPr   *xmlTblPr `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblPr"`
 	TcPr    *xmlTcPr  `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tcPr"`
+	PPr     *xmlPPr   `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main pPr"`
 }
 
-// resolvedTableStyle is a table style's effective border/shading base, after
-// following its w:basedOn chain.
+// resolvedTableStyle is a table style's effective border/shading/indent
+// base, after following its w:basedOn chain.
 type resolvedTableStyle struct {
 	Borders *xmlBorders
 	Shd     *xmlShd
+	Ind     *xmlTblInd
 }
 
 // buildTableStyles resolves every table style declared in xs (nil-safe: an
@@ -262,6 +399,7 @@ func resolveTableStyle(id string, defs map[string]xmlStyle, cache map[string]res
 	var own resolvedTableStyle
 	if def.TblPr != nil {
 		own.Borders = def.TblPr.Borders
+		own.Ind = def.TblPr.Ind
 	}
 	if def.TcPr != nil {
 		own.Shd = def.TcPr.Shd
@@ -273,6 +411,7 @@ func resolveTableStyle(id string, defs map[string]xmlStyle, cache map[string]res
 	merged := resolvedTableStyle{
 		Borders: mergeBorders(own.Borders, parent.Borders),
 		Shd:     coalesceShd(own.Shd, parent.Shd),
+		Ind:     coalesceTblInd(own.Ind, parent.Ind),
 	}
 	cache[id] = merged
 	return merged
@@ -313,46 +452,170 @@ func coalesceShd(a, b *xmlShd) *xmlShd {
 	return b
 }
 
+func coalesceTblInd(a, b *xmlTblInd) *xmlTblInd {
+	if a != nil {
+		return a
+	}
+	return b
+}
+
+// --- Paragraph styles (word/styles.xml) ---
+//
+// Mirrors the table-style machinery above: only a paragraph style's own
+// w:pPr/w:spacing is modeled (the one property this change resolves through
+// styles), following its w:basedOn chain. Alignment/indent/run properties
+// carried by paragraph styles are out of scope - see design.md.
+
+// resolvedParaStyle is a paragraph style's effective spacing base, after
+// following its w:basedOn chain.
+type resolvedParaStyle struct {
+	Spacing *xmlPSpacing
+}
+
+// buildParaStyles resolves every paragraph style declared in xs (nil-safe:
+// an absent styles.xml yields an empty map, so callers fall back to inline/
+// docDefaults resolution).
+func buildParaStyles(xs *xmlStyles) map[string]resolvedParaStyle {
+	resolved := make(map[string]resolvedParaStyle)
+	if xs == nil {
+		return resolved
+	}
+	defs := make(map[string]xmlStyle)
+	for _, s := range xs.Styles {
+		if strings.EqualFold(s.Type, "paragraph") && s.StyleID != "" {
+			defs[s.StyleID] = s
+		}
+	}
+	for id := range defs {
+		resolved[id] = resolveParaStyle(id, defs, resolved, make(map[string]bool))
+	}
+	return resolved
+}
+
+// resolveParaStyle resolves id's own spacing merged over its w:basedOn ancestor
+// chain (nearest style wins per field). visiting guards against a cyclic
+// basedOn chain; an unresolvable id resolves to the zero value.
+func resolveParaStyle(id string, defs map[string]xmlStyle, cache map[string]resolvedParaStyle, visiting map[string]bool) resolvedParaStyle {
+	if rs, ok := cache[id]; ok {
+		return rs
+	}
+	def, ok := defs[id]
+	if !ok || visiting[id] {
+		return resolvedParaStyle{}
+	}
+	visiting[id] = true
+	defer delete(visiting, id)
+
+	var own resolvedParaStyle
+	if def.PPr != nil {
+		own.Spacing = def.PPr.Spacing
+	}
+	var parent resolvedParaStyle
+	if def.BasedOn != nil && def.BasedOn.Val != "" {
+		parent = resolveParaStyle(def.BasedOn.Val, defs, cache, visiting)
+	}
+	merged := resolvedParaStyle{Spacing: mergeSpacing(own.Spacing, parent.Spacing)}
+	cache[id] = merged
+	return merged
+}
+
+// mergeSpacing combines two xmlPSpacing per field (before/after), own winning
+// where it declares a value; a nil result means neither declared anything.
+// Structured like mergeBorders.
+func mergeSpacing(own, fallback *xmlPSpacing) *xmlPSpacing {
+	if own == nil && fallback == nil {
+		return nil
+	}
+	var o, f xmlPSpacing
+	if own != nil {
+		o = *own
+	}
+	if fallback != nil {
+		f = *fallback
+	}
+	merged := xmlPSpacing{
+		Before: coalesceStr(o.Before, f.Before),
+		After:  coalesceStr(o.After, f.After),
+	}
+	// Line and LineRule travel as a pair: a rule must not be split from its
+	// value, so whichever source declares w:line supplies both.
+	if o.Line != "" {
+		merged.Line, merged.LineRule = o.Line, o.LineRule
+	} else {
+		merged.Line, merged.LineRule = f.Line, f.LineRule
+	}
+	return &merged
+}
+
+func coalesceStr(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+
 // --- Builders: xml* -> the public document model ---
 
-func buildBody(body xmlBody, tableStyles map[string]resolvedTableStyle) []BodyElement {
+// styleContext bundles the resolved style data threaded through the builders:
+// table styles (borders/shading/indent), paragraph styles (spacing), and the
+// document-wide default spacing from w:docDefaults.
+type styleContext struct {
+	tables         map[string]resolvedTableStyle
+	paragraphs     map[string]resolvedParaStyle
+	defaultSpacing *xmlPSpacing
+}
+
+func buildBody(body xmlBody, sc styleContext) []BodyElement {
 	elems := make([]BodyElement, 0, len(body.Children))
 	for _, c := range body.Children {
 		switch {
 		case c.Paragraph != nil:
-			p := buildParagraph(*c.Paragraph)
+			p := buildParagraph(*c.Paragraph, sc)
 			elems = append(elems, BodyElement{Paragraph: &p})
 		case c.Table != nil:
-			t := buildTable(*c.Table, tableStyles)
+			t := buildTable(*c.Table, sc)
 			elems = append(elems, BodyElement{Table: &t})
 		}
 	}
 	return elems
 }
 
-func buildParagraphSlice(xps []xmlParagraph) []Paragraph {
+func buildParagraphSlice(xps []xmlParagraph, sc styleContext) []Paragraph {
 	paras := make([]Paragraph, 0, len(xps))
 	for _, xp := range xps {
-		paras = append(paras, buildParagraph(xp))
+		paras = append(paras, buildParagraph(xp, sc))
 	}
 	return paras
 }
 
-func buildParagraph(xp xmlParagraph) Paragraph {
+func buildParagraph(xp xmlParagraph, sc styleContext) Paragraph {
 	var p Paragraph
+	var inlineSpacing *xmlPSpacing
+	var pStyleID string
 	if xp.Props != nil {
 		p.Props.Alignment = alignmentFrom(xp.Props.Jc)
 		p.Props.PageBreak = xp.Props.PageBreakBefore.on()
+		p.Props.Indent = indentFrom(xp.Props.Ind)
+		inlineSpacing = xp.Props.Spacing
+		if xp.Props.PStyle != nil {
+			pStyleID = xp.Props.PStyle.Val
+		}
 	}
+	p.Props.Spacing = resolveSpacing(inlineSpacing, pStyleID, sc)
 	for _, xr := range xp.Runs {
-		if hasPageBreak(xr) {
-			p.Props.PageBreak = true
+		props := runProps(xr.Props)
+		for _, c := range xr.Content {
+			switch {
+			case c.Break != nil:
+				if strings.EqualFold(strings.TrimSpace(c.Break.Type), "page") {
+					p.Props.PageBreak = true
+				} else {
+					p.Runs = append(p.Runs, Run{LineBreak: true})
+				}
+			case c.Text != nil && *c.Text != "":
+				p.Runs = append(p.Runs, Run{Text: *c.Text, Props: props})
+			}
 		}
-		text := runText(xr)
-		if text == "" {
-			continue
-		}
-		p.Runs = append(p.Runs, Run{Text: text, Props: runProps(xr.Props)})
 	}
 	return p
 }
@@ -373,21 +636,70 @@ func alignmentFrom(jc *xmlVal) Alignment {
 	}
 }
 
-func hasPageBreak(xr xmlRun) bool {
-	for _, br := range xr.Breaks {
-		if strings.EqualFold(br.Type, "page") {
-			return true
-		}
+// indentFrom resolves w:ind into an Indent, folding w:firstLine/w:hanging
+// into one signed FirstLineOffsetPt (positive/negative respectively; zero
+// when neither is declared, or when ind is nil).
+func indentFrom(ind *xmlInd) Indent {
+	if ind == nil {
+		return Indent{}
 	}
-	return false
+	var firstLine float64
+	switch {
+	case ind.FirstLine != "":
+		firstLine = dxaToPt(ind.FirstLine)
+	case ind.Hanging != "":
+		firstLine = -dxaToPt(ind.Hanging)
+	}
+	return Indent{
+		LeftPt:            dxaToPt(ind.Left),
+		RightPt:           dxaToPt(ind.Right),
+		FirstLineOffsetPt: firstLine,
+	}
 }
 
-func runText(xr xmlRun) string {
-	var b strings.Builder
-	for _, t := range xr.Texts {
-		b.WriteString(t.Value)
+// resolveSpacing resolves a paragraph's effective spacing per field: inline
+// w:spacing wins, else the referenced paragraph style's resolved spacing
+// (looked up by w:pStyle), else the document defaults, else zero.
+func resolveSpacing(inline *xmlPSpacing, pStyleID string, sc styleContext) Spacing {
+	styleThenDefault := sc.defaultSpacing
+	if ps, ok := sc.paragraphs[pStyleID]; ok {
+		styleThenDefault = mergeSpacing(ps.Spacing, styleThenDefault)
 	}
-	return b.String()
+	return spacingFrom(mergeSpacing(inline, styleThenDefault))
+}
+
+// spacingFrom resolves w:spacing into a Spacing (zero value when sp is nil).
+func spacingFrom(sp *xmlPSpacing) Spacing {
+	if sp == nil {
+		return Spacing{}
+	}
+	rule, val := lineSpacingFrom(sp.Line, sp.LineRule)
+	return Spacing{
+		BeforePt:  dxaToPt(sp.Before),
+		AfterPt:   dxaToPt(sp.After),
+		LineRule:  rule,
+		LineValue: val,
+	}
+}
+
+// lineSpacingFrom resolves w:line/w:lineRule into a rule and its value: a
+// multiple for "auto" (w:line in 240ths of a line, e.g. 276 → 1.15), or a
+// point height for "exact"/"atLeast" (w:line in dxa). An absent w:lineRule
+// with a w:line defaults to "auto" (per OOXML); an absent or unparseable
+// w:line yields the single (default) rule.
+func lineSpacingFrom(line, rule string) (LineSpacingRule, float64) {
+	v, err := strconv.ParseFloat(strings.TrimSpace(line), 64)
+	if err != nil {
+		return LineSpacingSingle, 0
+	}
+	switch strings.ToLower(strings.TrimSpace(rule)) {
+	case "exact":
+		return LineSpacingExact, v / 20
+	case "atleast":
+		return LineSpacingAtLeast, v / 20
+	default: // "auto" or absent
+		return LineSpacingMultiple, v / 240
+	}
 }
 
 func runProps(rpr *xmlRPr) RunProperties {
@@ -434,43 +746,55 @@ func firstNonEmpty(vals ...string) string {
 // column widths and (per cell) merge/border/shading state. tableStyles is
 // consulted when the table references a w:tblStyle, its resolved border
 // falling under the table's own inline w:tblBorders (inline wins per side).
-func buildTable(xt xmlTable, tableStyles map[string]resolvedTableStyle) Table {
+func buildTable(xt xmlTable, sc styleContext) Table {
 	var tblBorders *xmlBorders
 	var styleShd *xmlShd
+	var tblInd *xmlTblInd
 	if xt.Props != nil {
 		tblBorders = xt.Props.Borders
+		tblInd = xt.Props.Ind
 		if xt.Props.StyleID != nil {
-			if rs, ok := tableStyles[xt.Props.StyleID.Val]; ok {
+			if rs, ok := sc.tables[xt.Props.StyleID.Val]; ok {
 				tblBorders = mergeBorders(tblBorders, rs.Borders)
 				styleShd = rs.Shd
+				if tblInd == nil {
+					tblInd = rs.Ind
+				}
 			}
 		}
 	}
 	rows := make([]Row, 0, len(xt.Rows))
 	for _, xr := range xt.Rows {
-		rows = append(rows, buildRow(xr, tblBorders, styleShd, tableStyles))
+		rows = append(rows, buildRow(xr, tblBorders, styleShd, sc))
 	}
-	return Table{Rows: rows, ColumnWidths: resolveColumnWidths(xt)}
+	return Table{Rows: rows, ColumnWidths: resolveColumnWidths(xt), IndentPt: tblIndPt(tblInd)}
 }
 
-func buildRow(xr xmlRow, tblBorders *xmlBorders, styleShd *xmlShd, tableStyles map[string]resolvedTableStyle) Row {
+func tblIndPt(ind *xmlTblInd) float64 {
+	if ind == nil {
+		return 0
+	}
+	return dxaToPt(ind.W)
+}
+
+func buildRow(xr xmlRow, tblBorders *xmlBorders, styleShd *xmlShd, sc styleContext) Row {
 	cells := make([]Cell, 0, len(xr.Cells))
 	for _, xc := range xr.Cells {
-		cells = append(cells, buildCell(xc, tblBorders, styleShd, tableStyles))
+		cells = append(cells, buildCell(xc, tblBorders, styleShd, sc))
 	}
 	return Row{Cells: cells}
 }
 
-func buildCell(xc xmlCell, tblBorders *xmlBorders, styleShd *xmlShd, tableStyles map[string]resolvedTableStyle) Cell {
+func buildCell(xc xmlCell, tblBorders *xmlBorders, styleShd *xmlShd, sc styleContext) Cell {
 	cell := Cell{
-		Paragraphs: buildParagraphSlice(xc.Paragraphs),
+		Paragraphs: buildParagraphSlice(xc.Paragraphs, sc),
 		ColSpan:    gridSpan(xc.Props),
 		VMerge:     vMergeState(xc.Props),
 		Borders:    resolveCellBorders(tblBorders, tcBordersOf(xc.Props)),
 		Shading:    cellShading(shdOf(xc.Props), styleShd),
 	}
 	if len(xc.NestedTables) > 0 {
-		nested := buildTable(xc.NestedTables[0], tableStyles)
+		nested := buildTable(xc.NestedTables[0], sc)
 		cell.Nested = &nested
 	}
 	return cell
@@ -637,6 +961,62 @@ func dxaToPt(s string) float64 {
 		return 0
 	}
 	return v / 20
+}
+
+// dxaToPtOr converts a dxa attribute to points, returning def when the
+// attribute is absent (empty) or unparseable. Unlike dxaToPt, a declared "0"
+// is honored as 0 pt (a valid margin), so only truly missing values default.
+func dxaToPtOr(s string, def float64) float64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return def
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return def
+	}
+	return v / 20
+}
+
+// Default page geometry (A4, one-inch margins) used when a document declares
+// no w:sectPr, no w:pgSz/w:pgMar, or an unparseable value.
+const (
+	defaultPageWidthPt  = 595.28 // A4 width
+	defaultPageHeightPt = 841.89 // A4 height
+	defaultMarginPt     = 72.0   // 1 inch
+)
+
+// buildPageGeometry resolves a body-level w:sectPr into the public
+// PageGeometry, converting dxa → pt and falling back to the A4/one-inch
+// defaults per missing element or attribute (nil-safe). A non-positive page
+// dimension is treated as absent.
+func buildPageGeometry(sp *xmlSectPr) PageGeometry {
+	g := PageGeometry{
+		WidthPt:        defaultPageWidthPt,
+		HeightPt:       defaultPageHeightPt,
+		MarginTopPt:    defaultMarginPt,
+		MarginRightPt:  defaultMarginPt,
+		MarginBottomPt: defaultMarginPt,
+		MarginLeftPt:   defaultMarginPt,
+	}
+	if sp == nil {
+		return g
+	}
+	if sp.PgSz != nil {
+		if w := dxaToPtOr(sp.PgSz.W, 0); w > 0 {
+			g.WidthPt = w
+		}
+		if h := dxaToPtOr(sp.PgSz.H, 0); h > 0 {
+			g.HeightPt = h
+		}
+	}
+	if sp.PgMar != nil {
+		g.MarginTopPt = dxaToPtOr(sp.PgMar.Top, defaultMarginPt)
+		g.MarginRightPt = dxaToPtOr(sp.PgMar.Right, defaultMarginPt)
+		g.MarginBottomPt = dxaToPtOr(sp.PgMar.Bottom, defaultMarginPt)
+		g.MarginLeftPt = dxaToPtOr(sp.PgMar.Left, defaultMarginPt)
+	}
+	return g
 }
 
 // eighthsToPt converts eighths of a point (the unit border w:sz uses) to points.

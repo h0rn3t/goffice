@@ -1,18 +1,12 @@
 package convert
 
-import "io"
+import (
+	"io"
 
-// Page geometry in points (A4, 1-inch margins). Fixed for the MVP because
-// section geometry (w:sectPr) is out of scope; a single set of constants keeps
-// it trivial to make configurable later.
+	"github.com/h0rn3t/goffice/document"
+)
+
 const (
-	pageWidthPt  = 595.28 // A4 width
-	pageHeightPt = 841.89 // A4 height
-	marginPt     = 72.0   // 1 inch
-
-	contentWidthPt  = pageWidthPt - 2*marginPt
-	contentHeightPt = pageHeightPt - 2*marginPt
-
 	// lineSpacing multiplies a line's tallest font size to get its box height.
 	lineSpacing = 1.2
 
@@ -23,6 +17,25 @@ const (
 	// all-vMerge-continuation row still occupies visible space.
 	minRowHeightPt = defaultRenderSizePt*lineSpacing + 2*cellPaddingPt
 )
+
+// page is the per-document layout frame in points, derived from the
+// document's PageGeometry: where content starts (left/top margin), how wide it
+// may be, and the y beyond which content must paginate (page height minus the
+// bottom margin).
+type page struct {
+	originX, originY float64
+	contentWidth     float64
+	bottomLimit      float64
+}
+
+func pageFrom(g document.PageGeometry) page {
+	return page{
+		originX:      g.MarginLeftPt,
+		originY:      g.MarginTopPt,
+		contentWidth: g.WidthPt - g.MarginLeftPt - g.MarginRightPt,
+		bottomLimit:  g.HeightPt - g.MarginBottomPt,
+	}
+}
 
 // renderer is the thin seam over the PDF backend. Coordinates and sizes are in
 // points; the origin is the top-left of the page and DrawText positions text by

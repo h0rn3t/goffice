@@ -15,6 +15,9 @@ type word struct {
 	props document.RunProperties
 	width float64
 	gap   float64
+	// lineBreak marks an explicit in-paragraph line break (a zero-width marker,
+	// never drawn); layoutParagraph ends the current line when it reaches one.
+	lineBreak bool
 }
 
 // line is a packed row of words ready to draw.
@@ -23,6 +26,29 @@ type line struct {
 	natural float64 // words plus their internal gaps
 	maxSize float64 // tallest run size on the line
 	height  float64 // vertical advance (maxSize * lineSpacing)
+}
+
+// lineHeightFor computes a line's vertical advance from the paragraph's
+// resolved line spacing. The natural single-spaced height of a line is its
+// tallest run size times the default multiplier (lineSpacing); OOXML's "auto"
+// rule counts that natural height in lines (w:line ÷ 240), so a multiple scales
+// the natural height rather than the bare font size. Exact fixes the height;
+// at-least floors it at the natural height; single uses the natural height.
+func lineHeightFor(maxSize float64, sp document.Spacing) float64 {
+	natural := maxSize * lineSpacing
+	switch sp.LineRule {
+	case document.LineSpacingMultiple:
+		return natural * sp.LineValue
+	case document.LineSpacingExact:
+		return sp.LineValue
+	case document.LineSpacingAtLeast:
+		if natural > sp.LineValue {
+			return natural
+		}
+		return sp.LineValue
+	default: // LineSpacingSingle
+		return natural
+	}
 }
 
 // layoutParagraph packs a paragraph's runs into lines that fit width. A word
@@ -42,16 +68,26 @@ func layoutParagraph(r renderer, p document.Paragraph, width float64) []line {
 			words:   cur,
 			natural: curW,
 			maxSize: curMax,
-			height:  curMax * lineSpacing,
+			height:  lineHeightFor(curMax, p.Props.Spacing),
 		})
 		cur, curW, curMax = nil, 0, 0
 	}
 
+	firstPlaced := false
 	for _, w := range words {
-		gap := w.gap
-		if len(cur) == 0 {
-			gap = 0 // no leading space at the start of a line
+		if w.lineBreak {
+			if len(cur) > 0 {
+				flush()
+			} else { // a break on an empty line is a blank line
+				lines = append(lines, line{height: lineHeightFor(defaultRenderSizePt, p.Props.Spacing)})
+			}
+			firstPlaced = true
+			continue
 		}
+		gap := w.gap
+		if len(cur) == 0 && firstPlaced {
+			gap = 0 // drop leading whitespace at a soft-wrap continuation line
+		} // the paragraph's first word keeps its leading gap as a first-line indent
 		if len(cur) > 0 && curW+gap+w.width > width {
 			flush()
 			gap = 0
@@ -62,6 +98,7 @@ func layoutParagraph(r renderer, p document.Paragraph, width float64) []line {
 		if w.props.SizePt > curMax {
 			curMax = w.props.SizePt
 		}
+		firstPlaced = true
 	}
 	if len(cur) > 0 {
 		flush()
@@ -71,15 +108,26 @@ func layoutParagraph(r renderer, p document.Paragraph, width float64) []line {
 
 // drawLine renders one packed line at baseline y, positioned within [x0, x0+width]
 // per the paragraph's alignment. isLast suppresses justification of a
-// paragraph's final line.
-func drawLine(r renderer, ln line, align document.Alignment, x0, width, y float64, isLast bool) {
+// paragraph's final line. firstLineOffsetPt shifts only the first line
+// (isFirst): positive for a first-line indent, negative for a hanging
+// indent; it applies to AlignLeft/AlignJustify only - Word's first-line/
+// hanging indent combined with center/right alignment is out of scope.
+func drawLine(r renderer, ln line, align document.Alignment, x0, width, y float64, isLast bool, firstLineOffsetPt float64, isFirst bool) {
+	// lead is the paragraph's first-line leading indent (preserved leading
+	// whitespace). It shifts left/justify text right; centered/right-aligned
+	// text is positioned on its content alone, as if the leading space were
+	// absent, so lead is subtracted from the alignment width and not drawn.
+	var lead float64
+	if isFirst && len(ln.words) > 0 {
+		lead = ln.words[0].gap
+	}
 	x := x0
 	var extraPerGap float64
 	switch align {
 	case document.AlignRight:
-		x = x0 + (width - ln.natural)
+		x = x0 + (width - (ln.natural - lead))
 	case document.AlignCenter:
-		x = x0 + (width-ln.natural)/2
+		x = x0 + (width-(ln.natural-lead))/2
 	case document.AlignJustify:
 		if !isLast {
 			if gaps := gapCount(ln); gaps > 0 {
@@ -88,9 +136,22 @@ func drawLine(r renderer, ln line, align document.Alignment, x0, width, y float6
 				}
 			}
 		}
+		if isFirst {
+			x += firstLineOffsetPt
+		}
+		x += lead
+	default: // AlignLeft
+		if isFirst {
+			x += firstLineOffsetPt
+		}
+		x += lead
 	}
-	if x < x0 { // clamp an overflowing (oversized) line to the left edge
-		x = x0
+	minX := x0
+	if isFirst && firstLineOffsetPt < 0 { // a hanging indent legitimately starts left of x0
+		minX = x0 + firstLineOffsetPt
+	}
+	if x < minX { // clamp an overflowing (oversized) line to its left edge
+		x = minX
 	}
 
 	baseline := y + ln.maxSize
@@ -117,28 +178,30 @@ func gapCount(ln line) int {
 	return n
 }
 
-// measureWords tokenizes a paragraph's runs into words with widths and leading
-// gaps measured in each token's own font.
+// measureWords tokenizes a paragraph's runs into words, each carrying the
+// measured width of the whitespace preceding it (its gap). A whitespace run is
+// measured at its full width in its own font - preserved `xml:space="preserve"`
+// spaces keep their width rather than collapsing to one - accumulating across
+// consecutive whitespace tokens (e.g. spaces split by a formatting change).
 func measureWords(r renderer, p document.Paragraph) []word {
 	var words []word
-	pendingGap := false
-	var gapProps document.RunProperties
+	var pendingGap float64
 
 	for _, run := range p.Runs {
+		if run.LineBreak {
+			words = append(words, word{lineBreak: true})
+			pendingGap = 0
+			continue
+		}
 		for _, tok := range tokenize(run.Text) {
+			r.SetFont(run.Props.FontFamily, run.Props.Bold, run.Props.Italic, run.Props.Underline, run.Props.SizePt)
 			if tok.space {
-				pendingGap = true
-				gapProps = run.Props
+				pendingGap += r.TextWidth(tok.text)
 				continue
 			}
-			r.SetFont(run.Props.FontFamily, run.Props.Bold, run.Props.Italic, run.Props.Underline, run.Props.SizePt)
-			w := word{text: tok.text, props: run.Props, width: r.TextWidth(tok.text)}
-			if pendingGap {
-				r.SetFont(gapProps.FontFamily, gapProps.Bold, gapProps.Italic, gapProps.Underline, gapProps.SizePt)
-				w.gap = r.TextWidth(" ")
-			}
+			w := word{text: tok.text, props: run.Props, width: r.TextWidth(tok.text), gap: pendingGap}
 			words = append(words, w)
-			pendingGap = false
+			pendingGap = 0
 		}
 	}
 	return words

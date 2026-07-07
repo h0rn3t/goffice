@@ -21,6 +21,14 @@ func TestMapFontFamily(t *testing.T) {
 		{"Courier New", fonts.Mono},
 		{"Consolas", fonts.Mono},
 		{"Menlo", fonts.Mono},
+		{"Constantia", fonts.Serif},
+		{"Palatino Linotype", fonts.Serif},
+		{"Bookman Old Style", fonts.Serif},
+		{"Rockwell", fonts.Serif},
+		{"Monaco", fonts.Mono},
+		{"Fira Code", fonts.Mono},
+		{"Cascadia Code", fonts.Mono},
+		{"JetBrains Mono", fonts.Mono},
 	}
 	for _, tt := range tests {
 		if got := mapFontFamily(tt.name); got != tt.want {
@@ -30,7 +38,7 @@ func TestMapFontFamily(t *testing.T) {
 }
 
 func TestTrivialRenderEmitsPDF(t *testing.T) {
-	r := newFPDFRenderer()
+	r := newFPDFRenderer(testGeometry.WidthPt, testGeometry.HeightPt)
 	r.AddPage()
 	r.SetFont(fonts.Sans, true, false, true, 12)
 	r.DrawText(marginPt, 120, "hello")

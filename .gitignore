@@ -33,3 +33,5 @@ go.work.sum
 openspec/
 CLAUDE.md
 test.docx
+test.pdf
+.claude

@@ -29,10 +29,16 @@ var utf8Styles = []struct {
 	{"BI", true, true},
 }
 
-func newFPDFRenderer() *fpdfRenderer {
-	pdf := fpdf.New("P", "pt", "A4", "")
+// newFPDFRenderer creates a backend whose pages are widthPt × heightPt (points),
+// sized from the document's page geometry rather than a fixed A4.
+// simplified: no SetMargins - auto page breaks are off and the layout positions
+// all text by absolute coordinates, so fpdf's own margins have no effect here.
+func newFPDFRenderer(widthPt, heightPt float64) *fpdfRenderer {
+	pdf := fpdf.NewCustom(&fpdf.InitType{
+		UnitStr: "pt",
+		Size:    fpdf.SizeType{Wd: widthPt, Ht: heightPt},
+	})
 	pdf.SetAutoPageBreak(false, 0) // pagination is handled by the layout
-	pdf.SetMargins(marginPt, marginPt, marginPt)
 	for _, family := range fonts.Families {
 		for _, s := range utf8Styles {
 			pdf.AddUTF8FontFromBytes(family, s.str, fonts.Bytes(family, s.bold, s.italic))
@@ -116,9 +122,13 @@ func parseHexColor(hex string) (r, g, b int, ok bool) {
 func mapFontFamily(name string) string {
 	n := strings.ToLower(name)
 	switch {
-	case containsAny(n, "times", "serif", "georgia", "garamond", "roman", "cambria", "minion", "book"):
+	case containsAny(n, "times", "serif", "georgia", "garamond", "roman", "cambria", "minion", "book",
+		"constantia", "palatino", "baskerville", "didot", "playfair", "merriweather", "cardo",
+		"goudy", "caslon", "bodoni", "rockwell", "perpetua"):
 		return fonts.Serif
-	case containsAny(n, "courier", "mono", "consol", "menlo", "code"):
+	case containsAny(n, "courier", "mono", "consol", "menlo", "code", "monaco", "lucida console",
+		"source code", "fira", "cascadia", "andale", "dejavu sans mono", "ubuntu mono",
+		"jetbrains", "inconsolata", "sfmono", "sf mono"):
 		return fonts.Mono
 	default:
 		return fonts.Sans

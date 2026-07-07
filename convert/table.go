@@ -2,11 +2,14 @@ package convert
 
 import "github.com/h0rn3t/goffice/document"
 
-// paraBox is one cell paragraph's wrapped lines plus its alignment (drawLine
-// needs both).
+// paraBox is one cell paragraph's wrapped lines plus its alignment and
+// indent (drawLine needs all three, but a cell's draw pass happens after its
+// row's cells are measured, so they're carried from layout time to then).
 type paraBox struct {
-	lines []line
-	align document.Alignment
+	lines   []line
+	align   document.Alignment
+	indent  document.Indent
+	spacing document.Spacing
 }
 
 // cellContent is a cell's laid-out paragraphs and (if any) its nested table,
@@ -41,15 +44,19 @@ type tableLayout struct {
 }
 
 // layoutTable measures every row and cell of t, resolving column x-offsets
-// from t.ColumnWidths and each row's height from its tallest non-continuation
-// cell (floored at minRowHeightPt).
+// from t.IndentPt and t.ColumnWidths (so every column - and therefore every
+// cell drawn via x0 + colOffsets[i] - picks up the table's own indent,
+// relative to whatever frame x0 itself is measured from: the page margin
+// for a top-level table, a parent cell's content edge for a nested one) and
+// each row's height from its tallest non-continuation cell (floored at
+// minRowHeightPt).
 //
 // simplified: a vMerge-restart cell's own content can't force its spanned
 // rows taller than their independently-computed heights - only the common
 // case (merged cell content fits within the rows it spans) is handled.
 func layoutTable(r renderer, t document.Table) tableLayout {
 	offsets := make([]float64, len(t.ColumnWidths))
-	var acc float64
+	acc := t.IndentPt
 	for i, w := range t.ColumnWidths {
 		offsets[i] = acc
 		acc += w
@@ -84,10 +91,11 @@ func layoutTable(r renderer, t document.Table) tableLayout {
 func layoutCellContent(r renderer, cell document.Cell, width float64) cellContent {
 	var cc cellContent
 	for _, p := range cell.Paragraphs {
-		lines := layoutParagraph(r, p, width)
-		cc.paragraphs = append(cc.paragraphs, paraBox{lines: lines, align: p.Props.Alignment})
+		innerWidth := width - p.Props.Indent.LeftPt - p.Props.Indent.RightPt
+		lines := layoutParagraph(r, p, innerWidth)
+		cc.paragraphs = append(cc.paragraphs, paraBox{lines: lines, align: p.Props.Alignment, indent: p.Props.Indent, spacing: p.Props.Spacing})
 		if len(lines) == 0 {
-			cc.height += defaultRenderSizePt * lineSpacing
+			cc.height += lineHeightFor(defaultRenderSizePt, p.Props.Spacing)
 			continue
 		}
 		for _, ln := range lines {
@@ -142,18 +150,18 @@ func spanWidth(colWidths []float64, col, span int) float64 {
 	return w
 }
 
-// renderTable lays out t and draws it starting at (x0, cursorY), starting a
-// new page before any row that would cross the bottom margin (a row is never
-// split across pages). It returns the cursor position after the table.
-func renderTable(r renderer, t document.Table, x0, cursorY float64, atPageTop bool) (float64, bool) {
+// renderTable lays out t and draws it starting at (pg.originX, cursorY),
+// starting a new page before any row that would cross the bottom margin (a row
+// is never split across pages). It returns the cursor position after the table.
+func renderTable(r renderer, t document.Table, pg page, cursorY float64, atPageTop bool) (float64, bool) {
 	tl := layoutTable(r, t)
 	for ri := range tl.rows {
 		rh := tl.rows[ri].height
-		if cursorY+rh > marginPt+contentHeightPt && !atPageTop {
+		if cursorY+rh > pg.bottomLimit && !atPageTop {
 			r.AddPage()
-			cursorY = marginPt
+			cursorY = pg.originY
 		}
-		drawRow(r, tl, ri, x0, cursorY)
+		drawRow(r, tl, ri, pg.originX, cursorY)
 		cursorY += rh
 		atPageTop = false
 	}
@@ -186,11 +194,13 @@ func drawCellBox(r renderer, cl cellLayout, x, y, width, height float64) {
 	cy := y + cellPaddingPt
 	for _, pb := range cl.content.paragraphs {
 		if len(pb.lines) == 0 {
-			cy += defaultRenderSizePt * lineSpacing
+			cy += lineHeightFor(defaultRenderSizePt, pb.spacing)
 			continue
 		}
+		innerX := x + cellPaddingPt + pb.indent.LeftPt
+		innerWidth := width - 2*cellPaddingPt - pb.indent.LeftPt - pb.indent.RightPt
 		for i, ln := range pb.lines {
-			drawLine(r, ln, pb.align, x+cellPaddingPt, width-2*cellPaddingPt, cy, i == len(pb.lines)-1)
+			drawLine(r, ln, pb.align, innerX, innerWidth, cy, i == len(pb.lines)-1, pb.indent.FirstLineOffsetPt, i == 0)
 			cy += ln.height
 		}
 	}

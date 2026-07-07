@@ -1,10 +1,52 @@
 # goffice
 
-Open, community-driven alternative to UniOffice. A pure Go library for creating
-and processing Office Word (.docx), Excel (.xlsx), and PowerPoint (.pptx)
-documents.
+Відкрита альтернатива UniOffice. Бібліотека на чистому Go
+для створення й обробки документів Office Word (.docx), Excel (.xlsx) і
+PowerPoint (.pptx).
 
-No cgo, no external runtime (no LibreOffice or headless browser) — just Go.
+Без cgo, без зовнішнього середовища виконання (ні LibreOffice, ні headless-браузера) —
+лише Go.
+
+## Паритет з UniOffice
+
+Легенда: ✅ реалізовано · 🟡 частково · ⭕ ще не реалізовано.
+
+Головна відмінність goffice — конвертація `docx → PDF` на чистому Go, якої в
+UniOffice немає. Натомість UniOffice покриває значно ширший спектр створення й
+редагування документів, який goffice поки не реалізує.
+
+### Формати та режими
+
+| Можливість | Статус | Коментар |
+| --- | --- | --- |
+| Word `.docx` — читання моделі тіла | 🟡 | абзаци, runs, таблиці та підмножина форматування |
+| Word `.docx` — конвертація в PDF (чистий Go) | ✅ | ключова фіча goffice; в UniOffice відсутня |
+| Word `.docx` — створення / редагування / запис | ⭕ | заплановано |
+| Excel `.xlsx` — читання / запис | ⭕ | заплановано |
+| PowerPoint `.pptx` — читання / запис | ⭕ | заплановано |
+
+### Word: вміст і форматування (читання → PDF)
+
+| Можливість | Статус | Коментар |
+| --- | --- | --- |
+| Абзаци й текстові runs у порядку документа | ✅ | поряд із таблицями |
+| Жирний / курсив / підкреслення, гарнітура, розмір | ✅ | на рівні run (inline `w:rPr`) |
+| Вирівнювання, відступи (`w:ind`) | ✅ | ліво/центр/право/ширина; лівий/правий/першого рядка/висячий |
+| Інтервали до/після (`w:spacing`) | ✅ | inline → стиль (`w:pStyle`) → `w:docDefaults` |
+| Міжрядковий інтервал (`w:line`/`w:lineRule`) | ✅ | multiple / exact / atLeast |
+| Розриви рядка (`<w:br/>`) і сторінки (`w:type="page"`) | ✅ | |
+| Збережені пробіли (`xml:space="preserve"`) | ✅ | ширина пробілів і провідний відступ |
+| Геометрія сторінки (`w:sectPr`: `w:pgSz`/`w:pgMar`) | ✅ | запасний варіант A4/1″ |
+| Unicode / кирилиця | ✅ | вбудовані шрифти Liberation (SIL OFL 1.1) |
+| Таблиці: рядки/комірки, ширини, merge, рамки, заливка, вкладені | ✅ | рядок не розривається між сторінками |
+| Стилі таблиць (`w:tblStyle`, `w:basedOn`) | 🟡 | лише базова рамка/заливка; без `w:tblStylePr` |
+| Списки (нумеровані/марковані, `numbering.xml`) | ⭕ | |
+| Зображення / рисунки | ⭕ | пропускаються |
+| Колонтитули (headers/footers) | ⭕ | пропускаються |
+| Виноски, поля (fields), гіперпосилання, закладки, коментарі | ⭕ | пропускаються |
+| Повне успадкування стилів (run / нумерація / теми) | ⭕ | |
+| Кілька секцій, колонки (`w:cols`) | ⭕ | припускається одна секція |
+| Вбудовування довільних шрифтів / пошук у ОС | ⭕ | лише набір Liberation |
 
 ## docx → PDF
 
@@ -32,43 +74,66 @@ func main() {
 }
 ```
 
-A runnable version lives in [`examples/docx2pdf`](examples/docx2pdf):
+Готовий до запуску приклад — у [`examples/docx2pdf`](examples/docx2pdf):
 
 ```sh
 go run ./examples/docx2pdf in.docx out.pdf
 ```
 
-## MVP fidelity limitations
+## Обмеження точності (MVP)
 
-The current conversion renders **legible, flowed body text — not a
-pixel-perfect reproduction of Word**. Supported today:
+Поточна конвертація відтворює **читабельний, «пливкий» текст тіла документа — а не
+піксель-у-піксель копію Word**. Підтримується вже зараз:
 
-- paragraphs and text runs, in document order alongside tables;
-- per-run **bold**, *italic*, underline, font family and size;
-- paragraph alignment (left, center, right, justify) and explicit page breaks;
-- automatic word-wrap and pagination;
-- Unicode text, including Cyrillic — rendered through embedded Liberation
-  Sans/Serif/Mono fonts (SIL OFL 1.1) instead of the Latin-only PDF core fonts,
-  so non-Latin scripts render as correct glyphs, not mojibake;
-- tables: rows/cells, column widths (`w:tblGrid`), horizontal (`gridSpan`) and
-  vertical (`vMerge`) cell merging, per-side borders and cell shading, nested
-  tables, and pagination (a row is never split across pages). Borders/shading
-  resolve from inline `w:tblPr`/`w:tcPr` first, falling back to the table's
-  named style (`w:tblStyle`, via `styles.xml`, following `w:basedOn`) — so a
-  table styled the ordinary way in Word (e.g. the built-in "Table Grid")
-  renders with a visible grid, not just correctly positioned text.
+- абзаци й текстові runs, у порядку документа поряд із таблицями;
+- явні розриви рядка всередині абзацу (`<w:br/>`, розрив Shift+Enter) починають
+  новий рядок у межах абзацу, окремо від розриву сторінки (`w:type="page"`);
+- на рівні run — **жирний**, *курсив*, підкреслення, гарнітура та розмір шрифту;
+- вирівнювання абзацу (ліворуч, по центру, праворуч, за шириною), відступи (лівий,
+  правий, першого рядка/висячий через `w:ind`), інтервал до/після та явні розриви
+  сторінок — інтервал резолвиться по кожному полю: спершу власний inline
+  `w:spacing` абзацу, потім його стиль (`w:pStyle`, через `styles.xml`, за
+  ланцюгом `w:basedOn`), далі загальнодокументний `w:docDefaults`, тож абзаци,
+  що покладаються на типовий інтервал Word (найпоширеніший випадок, коли inline
+  нічого не задано), теж отримують свої вертикальні проміжки. Вертикальний
+  проміжок навколо таблиці створюється цим самим інтервалом сусідніх абзаців (в
+  OOXML сама таблиця не має властивості інтервалу), тож окремої обробки не потребує;
+- автоматичне перенесення по словах і посторінкова розбивка;
+- збережені пробіли (`xml:space="preserve"`): послідовності пробілів зберігають
+  повну ширину, а провідні пробіли створюють відступ першого рядка для абзаців
+  з вирівнюванням ліворуч/за шириною, тож відступи, задані пробілами (типово, коли
+  документ не має `w:ind`), збігаються з Word, а не згортаються в один пробіл;
+- геометрія сторінки із секції документа (`w:sectPr`): розмір сторінки (`w:pgSz`)
+  і поля (`w:pgMar`) визначають ширину контенту, точки переносу й розриви сторінок,
+  тож переноси рядків відповідають джерелу, а не фіксованій сторінці. За відсутності —
+  запасний варіант A4 з полями 1 дюйм;
+- текст у Unicode, зокрема кирилиця — відтворюється вбудованими шрифтами Liberation
+  Sans/Serif/Mono (SIL OFL 1.1) замість латинських core-шрифтів PDF, тож нелатинські
+  системи письма дають коректні гліфи, а не «кракозябри»;
+- таблиці: рядки/комірки, ширини колонок (`w:tblGrid`), горизонтальне (`gridSpan`)
+  і вертикальне (`vMerge`) об'єднання комірок, рамки по сторонах і заливка комірок,
+  вкладені таблиці та посторінкова розбивка (рядок ніколи не розривається між
+  сторінками). Рамки/заливка резолвляться спершу з inline `w:tblPr`/`w:tcPr`, а
+  далі — з іменованого стилю таблиці (`w:tblStyle`, через `styles.xml`, за
+  `w:basedOn`), тож таблиця, оформлена у Word звичайним способом (напр. вбудований
+  «Table Grid»), відображається з видимою сіткою, а не лише коректно розташованим
+  текстом. Власний лівий відступ таблиці (`w:tblInd`) резолвиться так само (спершу
+  inline, потім її іменований стиль) і зсуває її від поля сторінки (а для вкладеної
+  таблиці — від краю контенту батьківської комірки).
 
-Not yet handled (unsupported content is **skipped**, the conversion still
-succeeds):
+Поки не обробляється (непідтримуваний вміст **пропускається**, конвертація все одно
+завершується успішно):
 
-- images/drawings, headers/footers, footnotes, fields, hyperlinks;
-- `styles.xml` paragraph/run/numbering style inheritance and theme colors;
-  for tables, only a style's *base* border/shading is resolved — banded rows/
-  columns and first/last-row/column formatting (`w:tblStylePr`) are not;
-- section geometry (`sectPr`) — a fixed A4 page with 1-inch margins is used;
-- fonts beyond the bundled Liberation family (Word fonts are mapped to serif →
-  Liberation Serif, monospace → Liberation Mono, else Liberation Sans, so line
-  breaks and page counts can differ slightly from Word);
-- table auto-fit/content-based column sizing, cell padding customization
-  (a fixed default is used), repeating header rows across a page break, and
-  vertical text direction or diagonal cell borders.
+- зображення/рисунки, колонтитули, виноски, поля (fields), гіперпосилання;
+- успадкування стилів абзацу/run/нумерації зі `styles.xml` і кольори теми; для
+  таблиць резолвиться лише *базова* рамка/заливка стилю — смугасті рядки/колонки та
+  форматування першого/останнього рядка/колонки (`w:tblStylePr`) — ні;
+- кілька секцій і колонки (`w:cols`) — розмір сторінки й поля з body `w:sectPr`
+  *враховуються* (див. вище), але припускається одна секція;
+- шрифти поза набором Liberation (шрифти Word мапляться: serif → Liberation Serif,
+  monospace → Liberation Mono, решта → Liberation Sans, за широким, але скінченним
+  списком ключових слів, тож переноси рядків і кількість сторінок можуть трохи
+  відрізнятися від Word; без вбудовування конкретних шрифтів чи пошуку в ОС);
+- авто-підбір ширини колонок за вмістом, налаштування відступів у комірках
+  (використовується фіксоване значення), повторювані рядки-заголовки при переході
+  на нову сторінку, а також вертикальний напрям тексту чи діагональні рамки комірок.

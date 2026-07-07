@@ -453,6 +453,21 @@ func TestRender_LineBreakRespectsCenterAlignment(t *testing.T) {
 	}
 }
 
+func TestRender_LeadingSpacesIndentLineAfterBreak(t *testing.T) {
+	f := &fakeRenderer{}
+	// A <w:br/> then a run whose text starts with two spaces: the line after the
+	// hard break keeps its leading-space indent (unlike a soft-wrap continuation).
+	p := document.Paragraph{Runs: []document.Run{brk(), run("  hi", 10)}}
+	(&Converter{doc: &document.Document{Body: bodyOf(p)}}).render(f)
+
+	if len(f.draws) != 1 {
+		t.Fatalf("expected 1 draw, got %d", len(f.draws))
+	}
+	if got := f.draws[0].x - marginPt; got != 10 {
+		t.Fatalf("indent after break = %.1f, want 10 (two leading spaces preserved)", got)
+	}
+}
+
 func TestRender_NilDocumentProducesOnePage(t *testing.T) {
 	f := &fakeRenderer{}
 	ConvertToPdf(nil).render(f)

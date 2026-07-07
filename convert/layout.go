@@ -73,7 +73,11 @@ func layoutParagraph(r renderer, p document.Paragraph, width float64) []line {
 		cur, curW, curMax = nil, 0, 0
 	}
 
-	firstPlaced := false
+	// hardStart marks a line whose first word may keep its leading whitespace as
+	// an indent: the paragraph's first line and any line after an explicit
+	// <w:br/>. A soft-wrap continuation is not a hard start, so its leading
+	// whitespace is dropped.
+	hardStart := true
 	for _, w := range words {
 		if w.lineBreak {
 			if len(cur) > 0 {
@@ -81,16 +85,16 @@ func layoutParagraph(r renderer, p document.Paragraph, width float64) []line {
 			} else { // a break on an empty line is a blank line
 				lines = append(lines, line{height: lineHeightFor(defaultRenderSizePt, p.Props.Spacing)})
 			}
-			firstPlaced = true
+			hardStart = true
 			continue
 		}
 		gap := w.gap
-		if len(cur) == 0 && firstPlaced {
+		if len(cur) == 0 && !hardStart {
 			gap = 0 // drop leading whitespace at a soft-wrap continuation line
-		} // the paragraph's first word keeps its leading gap as a first-line indent
+		}
 		if len(cur) > 0 && curW+gap+w.width > width {
 			flush()
-			gap = 0
+			gap = 0 // this word now opens a soft-wrap line
 		}
 		w.gap = gap
 		cur = append(cur, w)
@@ -98,7 +102,7 @@ func layoutParagraph(r renderer, p document.Paragraph, width float64) []line {
 		if w.props.SizePt > curMax {
 			curMax = w.props.SizePt
 		}
-		firstPlaced = true
+		hardStart = false
 	}
 	if len(cur) > 0 {
 		flush()
@@ -113,12 +117,12 @@ func layoutParagraph(r renderer, p document.Paragraph, width float64) []line {
 // indent; it applies to AlignLeft/AlignJustify only - Word's first-line/
 // hanging indent combined with center/right alignment is out of scope.
 func drawLine(r renderer, ln line, align document.Alignment, x0, width, y float64, isLast bool, firstLineOffsetPt float64, isFirst bool) {
-	// lead is the paragraph's first-line leading indent (preserved leading
-	// whitespace). It shifts left/justify text right; centered/right-aligned
-	// text is positioned on its content alone, as if the leading space were
-	// absent, so lead is subtracted from the alignment width and not drawn.
+	// lead is a line's leading-whitespace indent (a hard-start line's first-word
+	// gap; layout already zeroed it for soft-wrap continuations). It shifts
+	// left/justify text right; centered/right-aligned text is positioned on its
+	// content alone, so lead is subtracted from the alignment width and not drawn.
 	var lead float64
-	if isFirst && len(ln.words) > 0 {
+	if len(ln.words) > 0 {
 		lead = ln.words[0].gap
 	}
 	x := x0

@@ -1,23 +1,36 @@
-// Package convert renders a document.Document into a paginated PDF: text
-// measurement, word-wrap, per-run formatting, alignment and page breaks. The
-// public entry point mirrors UniOffice: ConvertToPdf(doc) → WriteToFile/Write.
-package convert
+// Rendering of a Document into a paginated PDF: text measurement, word-wrap,
+// per-run formatting, alignment and page breaks. The simplest entry points are
+// the Document methods WritePDF (to a file) and WritePDFTo (to an io.Writer);
+// ConvertToPdf exposes the same rendering as a reusable Converter.
+package document
 
 import (
 	"fmt"
 	"io"
 	"os"
-
-	"github.com/h0rn3t/goffice/document"
 )
+
+// WritePDF renders the document and writes the PDF to path, in one call:
+//
+//	doc, err := document.Open("in.docx")
+//	...
+//	err = doc.WritePDF("out.pdf")
+func (d *Document) WritePDF(path string) error {
+	return ConvertToPdf(d).WriteToFile(path)
+}
+
+// WritePDFTo renders the document and writes the complete PDF byte stream to w.
+func (d *Document) WritePDFTo(w io.Writer) error {
+	return ConvertToPdf(d).Write(w)
+}
 
 // Converter renders a document to PDF. Create one with ConvertToPdf.
 type Converter struct {
-	doc *document.Document
+	doc *Document
 }
 
 // ConvertToPdf returns a Converter that renders doc's body as flowed PDF text.
-func ConvertToPdf(doc *document.Document) *Converter {
+func ConvertToPdf(doc *Document) *Converter {
 	return &Converter{doc: doc}
 }
 
@@ -32,9 +45,9 @@ func (c *Converter) Write(w io.Writer) error {
 // geometry returns the page geometry to render on: the document's own
 // (from w:sectPr) when present, else the A4/one-inch default - also used for a
 // nil document or one built without geometry (a non-positive width).
-func (c *Converter) geometry() document.PageGeometry {
+func (c *Converter) geometry() PageGeometry {
 	if c.doc == nil || c.doc.Geometry.WidthPt <= 0 {
-		return document.DefaultPageGeometry()
+		return DefaultPageGeometry()
 	}
 	return c.doc.Geometry
 }
@@ -45,14 +58,14 @@ func (c *Converter) geometry() document.PageGeometry {
 func (c *Converter) WriteToFile(path string) error {
 	f, err := os.Create(path)
 	if err != nil {
-		return fmt.Errorf("goffice: create pdf %q: %w", path, err)
+		return fmt.Errorf("docx2pdf: create pdf %q: %w", path, err)
 	}
 	if err := c.Write(f); err != nil {
 		_ = f.Close()
-		return fmt.Errorf("goffice: write pdf %q: %w", path, err)
+		return fmt.Errorf("docx2pdf: write pdf %q: %w", path, err)
 	}
 	if err := f.Close(); err != nil {
-		return fmt.Errorf("goffice: close pdf %q: %w", path, err)
+		return fmt.Errorf("docx2pdf: close pdf %q: %w", path, err)
 	}
 	return nil
 }
@@ -85,8 +98,8 @@ func (c *Converter) render(r renderer) {
 // space-before/space-after (p.Props.Spacing) is added as plain cursor
 // advances with no dedicated overflow check of its own - a table's
 // surrounding vertical gap is produced entirely by its neighboring
-// paragraphs' spacing this way, with no changes needed in convert/table.go.
-func renderParagraph(r renderer, p document.Paragraph, pg page, cursorY float64, atPageTop bool) (float64, bool) {
+// paragraphs' spacing this way, with no changes needed in table.go.
+func renderParagraph(r renderer, p Paragraph, pg page, cursorY float64, atPageTop bool) (float64, bool) {
 	if p.Props.PageBreak && !atPageTop {
 		r.AddPage()
 		cursorY, atPageTop = pg.originY, true

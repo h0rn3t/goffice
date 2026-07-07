@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/h0rn3t/goffice/document"
-	"github.com/h0rn3t/goffice/internal/docxtest"
+	"github.com/h0rn3t/docx2pdf/document"
+	"github.com/h0rn3t/docx2pdf/internal/docxtest"
 )
 
 func TestOpen_ValidDocument(t *testing.T) {

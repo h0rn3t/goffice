@@ -66,7 +66,7 @@ func Bytes(family string, bold, italic bool) []byte {
 	case Mono:
 		return pick(monoRegular, monoBold, monoItalic, monoBoldItalic, bold, italic)
 	default:
-		panic("goffice: unknown embedded font family " + family)
+		panic("docx2pdf: unknown embedded font family " + family)
 	}
 }
 

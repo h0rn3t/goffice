@@ -1,15 +1,13 @@
-package convert
-
-import "github.com/h0rn3t/goffice/document"
+package document
 
 // paraBox is one cell paragraph's wrapped lines plus its alignment and
 // indent (drawLine needs all three, but a cell's draw pass happens after its
 // row's cells are measured, so they're carried from layout time to then).
 type paraBox struct {
 	lines   []line
-	align   document.Alignment
-	indent  document.Indent
-	spacing document.Spacing
+	align   Alignment
+	indent  Indent
+	spacing Spacing
 }
 
 // cellContent is a cell's laid-out paragraphs and (if any) its nested table,
@@ -23,7 +21,7 @@ type cellContent struct {
 // cellLayout pairs a cell with its laid-out content and its starting column
 // index (needed to look up vertical-merge continuations in later rows).
 type cellLayout struct {
-	cell    document.Cell
+	cell    Cell
 	col     int
 	content cellContent
 }
@@ -54,7 +52,7 @@ type tableLayout struct {
 // simplified: a vMerge-restart cell's own content can't force its spanned
 // rows taller than their independently-computed heights - only the common
 // case (merged cell content fits within the rows it spans) is handled.
-func layoutTable(r renderer, t document.Table) tableLayout {
+func layoutTable(r renderer, t Table) tableLayout {
 	offsets := make([]float64, len(t.ColumnWidths))
 	acc := t.IndentPt
 	for i, w := range t.ColumnWidths {
@@ -71,7 +69,7 @@ func layoutTable(r renderer, t document.Table) tableLayout {
 			width := spanWidth(t.ColumnWidths, col, span)
 
 			var content cellContent
-			if cell.VMerge != document.VMergeContinue {
+			if cell.VMerge != VMergeContinue {
 				content = layoutCellContent(r, cell, width-2*cellPaddingPt)
 				if h := content.height + 2*cellPaddingPt; h > rl.height {
 					rl.height = h
@@ -88,7 +86,7 @@ func layoutTable(r renderer, t document.Table) tableLayout {
 
 // layoutCellContent lays out cell's paragraphs (stacked) and, if present, its
 // nested table, against the given inner width (already padding-adjusted).
-func layoutCellContent(r renderer, cell document.Cell, width float64) cellContent {
+func layoutCellContent(r renderer, cell Cell, width float64) cellContent {
 	var cc cellContent
 	for _, p := range cell.Paragraphs {
 		innerWidth := width - p.Props.Indent.LeftPt - p.Props.Indent.RightPt
@@ -127,7 +125,7 @@ func (tl tableLayout) mergedHeight(ri, col int) float64 {
 	h := tl.rows[ri].height
 	for rj := ri + 1; rj < len(tl.rows); rj++ {
 		cl, ok := tl.rows[rj].cellAt(col)
-		if !ok || cl.cell.VMerge != document.VMergeContinue {
+		if !ok || cl.cell.VMerge != VMergeContinue {
 			break
 		}
 		h += tl.rows[rj].height
@@ -135,7 +133,7 @@ func (tl tableLayout) mergedHeight(ri, col int) float64 {
 	return h
 }
 
-func colSpan(cell document.Cell) int {
+func colSpan(cell Cell) int {
 	if cell.ColSpan < 1 {
 		return 1
 	}
@@ -153,7 +151,7 @@ func spanWidth(colWidths []float64, col, span int) float64 {
 // renderTable lays out t and draws it starting at (pg.originX, cursorY),
 // starting a new page before any row that would cross the bottom margin (a row
 // is never split across pages). It returns the cursor position after the table.
-func renderTable(r renderer, t document.Table, pg page, cursorY float64, atPageTop bool) (float64, bool) {
+func renderTable(r renderer, t Table, pg page, cursorY float64, atPageTop bool) (float64, bool) {
 	tl := layoutTable(r, t)
 	for ri := range tl.rows {
 		rh := tl.rows[ri].height
@@ -173,7 +171,7 @@ func renderTable(r renderer, t document.Table, pg page, cursorY float64, atPageT
 func drawRow(r renderer, tl tableLayout, ri int, x0, y float64) {
 	row := tl.rows[ri]
 	for _, cl := range row.cells {
-		if cl.cell.VMerge == document.VMergeContinue {
+		if cl.cell.VMerge == VMergeContinue {
 			continue
 		}
 		width := spanWidth(tl.colWidths, cl.col, colSpan(cl.cell))
@@ -220,14 +218,14 @@ func drawTableRows(r renderer, tl tableLayout, x, y float64) {
 	}
 }
 
-func drawCellBorders(r renderer, b document.CellBorders, x, y, w, h float64) {
+func drawCellBorders(r renderer, b CellBorders, x, y, w, h float64) {
 	drawBorderSide(r, b.Top, x, y, x+w, y)
 	drawBorderSide(r, b.Bottom, x, y+h, x+w, y+h)
 	drawBorderSide(r, b.Left, x, y, x, y+h)
 	drawBorderSide(r, b.Right, x+w, y, x+w, y+h)
 }
 
-func drawBorderSide(r renderer, side document.BorderSide, x1, y1, x2, y2 float64) {
+func drawBorderSide(r renderer, side BorderSide, x1, y1, x2, y2 float64) {
 	if side.Style == "" {
 		return
 	}

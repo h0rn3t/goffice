@@ -1,4 +1,4 @@
-package convert
+package document
 
 import (
 	"io"
@@ -7,11 +7,11 @@ import (
 
 	"github.com/go-pdf/fpdf"
 
-	"github.com/h0rn3t/goffice/convert/fonts"
+	"github.com/h0rn3t/docx2pdf/document/fonts"
 )
 
 // fpdfRenderer implements renderer on top of github.com/go-pdf/fpdf, drawing
-// text through the embedded Liberation Unicode fonts (see convert/fonts) so
+// text through the embedded Liberation Unicode fonts (see document/fonts) so
 // non-Latin scripts render as correct glyphs instead of PDF-core-font mojibake.
 type fpdfRenderer struct {
 	pdf *fpdf.Fpdf

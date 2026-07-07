@@ -1,4 +1,4 @@
-module github.com/h0rn3t/goffice
+module github.com/h0rn3t/docx2pdf
 
 go 1.26.4
 

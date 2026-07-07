@@ -1,10 +1,10 @@
-package convert
+package document
 
 import (
 	"bytes"
 	"testing"
 
-	"github.com/h0rn3t/goffice/convert/fonts"
+	"github.com/h0rn3t/docx2pdf/document/fonts"
 )
 
 func TestMapFontFamily(t *testing.T) {

@@ -1,9 +1,7 @@
-package convert
+package document
 
 import (
 	"io"
-
-	"github.com/h0rn3t/goffice/document"
 )
 
 const (
@@ -28,7 +26,7 @@ type page struct {
 	bottomLimit      float64
 }
 
-func pageFrom(g document.PageGeometry) page {
+func pageFrom(g PageGeometry) page {
 	return page{
 		originX:      g.MarginLeftPt,
 		originY:      g.MarginTopPt,

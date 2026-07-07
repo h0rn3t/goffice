@@ -1,9 +1,7 @@
-package convert
+package document
 
 import (
 	"unicode"
-
-	"github.com/h0rn3t/goffice/document"
 )
 
 // word is a single whitespace-delimited token carrying its run's formatting.
@@ -12,7 +10,7 @@ import (
 // token — e.g. a formatting change mid-word).
 type word struct {
 	text  string
-	props document.RunProperties
+	props RunProperties
 	width float64
 	gap   float64
 	// lineBreak marks an explicit in-paragraph line break (a zero-width marker,
@@ -34,14 +32,14 @@ type line struct {
 // rule counts that natural height in lines (w:line ÷ 240), so a multiple scales
 // the natural height rather than the bare font size. Exact fixes the height;
 // at-least floors it at the natural height; single uses the natural height.
-func lineHeightFor(maxSize float64, sp document.Spacing) float64 {
+func lineHeightFor(maxSize float64, sp Spacing) float64 {
 	natural := maxSize * lineSpacing
 	switch sp.LineRule {
-	case document.LineSpacingMultiple:
+	case LineSpacingMultiple:
 		return natural * sp.LineValue
-	case document.LineSpacingExact:
+	case LineSpacingExact:
 		return sp.LineValue
-	case document.LineSpacingAtLeast:
+	case LineSpacingAtLeast:
 		if natural > sp.LineValue {
 			return natural
 		}
@@ -54,7 +52,7 @@ func lineHeightFor(maxSize float64, sp document.Spacing) float64 {
 // layoutParagraph packs a paragraph's runs into lines that fit width. A word
 // wider than width is placed alone on its line and allowed to overflow rather
 // than looping forever. Returns nil for an empty paragraph.
-func layoutParagraph(r renderer, p document.Paragraph, width float64) []line {
+func layoutParagraph(r renderer, p Paragraph, width float64) []line {
 	words := measureWords(r, p)
 	if len(words) == 0 {
 		return nil
@@ -116,7 +114,7 @@ func layoutParagraph(r renderer, p document.Paragraph, width float64) []line {
 // (isFirst): positive for a first-line indent, negative for a hanging
 // indent; it applies to AlignLeft/AlignJustify only - Word's first-line/
 // hanging indent combined with center/right alignment is out of scope.
-func drawLine(r renderer, ln line, align document.Alignment, x0, width, y float64, isLast bool, firstLineOffsetPt float64, isFirst bool) {
+func drawLine(r renderer, ln line, align Alignment, x0, width, y float64, isLast bool, firstLineOffsetPt float64, isFirst bool) {
 	// lead is a line's leading-whitespace indent (a hard-start line's first-word
 	// gap; layout already zeroed it for soft-wrap continuations). It shifts
 	// left/justify text right; centered/right-aligned text is positioned on its
@@ -128,11 +126,11 @@ func drawLine(r renderer, ln line, align document.Alignment, x0, width, y float6
 	x := x0
 	var extraPerGap float64
 	switch align {
-	case document.AlignRight:
+	case AlignRight:
 		x = x0 + (width - (ln.natural - lead))
-	case document.AlignCenter:
+	case AlignCenter:
 		x = x0 + (width-(ln.natural-lead))/2
-	case document.AlignJustify:
+	case AlignJustify:
 		if !isLast {
 			if gaps := gapCount(ln); gaps > 0 {
 				if slack := width - ln.natural; slack > 0 {
@@ -187,7 +185,7 @@ func gapCount(ln line) int {
 // measured at its full width in its own font - preserved `xml:space="preserve"`
 // spaces keep their width rather than collapsing to one - accumulating across
 // consecutive whitespace tokens (e.g. spaces split by a formatting change).
-func measureWords(r renderer, p document.Paragraph) []word {
+func measureWords(r renderer, p Paragraph) []word {
 	var words []word
 	var pendingGap float64
 

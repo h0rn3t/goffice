@@ -10,8 +10,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/h0rn3t/goffice/convert"
-	"github.com/h0rn3t/goffice/document"
+	"github.com/h0rn3t/docx2pdf/document"
 )
 
 func main() {
@@ -27,7 +26,7 @@ func main() {
 	}
 	defer func() { _ = doc.Close() }()
 
-	if err := convert.ConvertToPdf(doc).WriteToFile(out); err != nil {
+	if err := doc.WritePDF(out); err != nil {
 		log.Fatal(err)
 	}
 	fmt.Printf("wrote %s\n", out)

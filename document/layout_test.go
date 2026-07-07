@@ -1,18 +1,16 @@
-package convert
+package document
 
 import (
 	"io"
 	"strings"
 	"testing"
-
-	"github.com/h0rn3t/goffice/document"
 )
 
 // Default page frame the tests assert against: the A4/one-inch geometry a
 // document resolves to when it declares no w:sectPr. Derived from the single
-// source (document.DefaultPageGeometry) so it can't drift.
+// source (DefaultPageGeometry) so it can't drift.
 var (
-	testGeometry   = document.DefaultPageGeometry()
+	testGeometry   = DefaultPageGeometry()
 	testPage       = pageFrom(testGeometry)
 	marginPt       = testGeometry.MarginTopPt
 	contentWidthPt = testGeometry.WidthPt - testGeometry.MarginLeftPt - testGeometry.MarginRightPt
@@ -67,34 +65,34 @@ func (f *fakeRenderer) StrokeLine(x1, y1, x2, y2, widthPt float64, colorHex stri
 }
 func (f *fakeRenderer) Output(io.Writer) error { return nil }
 
-func run(text string, size float64) document.Run {
-	return document.Run{Text: text, Props: document.RunProperties{FontFamily: "Helvetica", SizePt: size}}
+func run(text string, size float64) Run {
+	return Run{Text: text, Props: RunProperties{FontFamily: "Helvetica", SizePt: size}}
 }
 
-func para(align document.Alignment, pageBreak bool, runs ...document.Run) document.Paragraph {
-	return document.Paragraph{Runs: runs, Props: document.ParagraphProperties{Alignment: align, PageBreak: pageBreak}}
+func para(align Alignment, pageBreak bool, runs ...Run) Paragraph {
+	return Paragraph{Runs: runs, Props: ParagraphProperties{Alignment: align, PageBreak: pageBreak}}
 }
 
-func paraWithIndent(align document.Alignment, indent document.Indent, runs ...document.Run) document.Paragraph {
-	return document.Paragraph{Runs: runs, Props: document.ParagraphProperties{Alignment: align, Indent: indent}}
+func paraWithIndent(align Alignment, indent Indent, runs ...Run) Paragraph {
+	return Paragraph{Runs: runs, Props: ParagraphProperties{Alignment: align, Indent: indent}}
 }
 
-func paraWithSpacing(align document.Alignment, spacing document.Spacing, runs ...document.Run) document.Paragraph {
-	return document.Paragraph{Runs: runs, Props: document.ParagraphProperties{Alignment: align, Spacing: spacing}}
+func paraWithSpacing(align Alignment, spacing Spacing, runs ...Run) Paragraph {
+	return Paragraph{Runs: runs, Props: ParagraphProperties{Alignment: align, Spacing: spacing}}
 }
 
 // bodyOf wraps paragraphs into a Document.Body, one BodyElement each.
-func bodyOf(paras ...document.Paragraph) []document.BodyElement {
-	body := make([]document.BodyElement, len(paras))
+func bodyOf(paras ...Paragraph) []BodyElement {
+	body := make([]BodyElement, len(paras))
 	for i := range paras {
-		body[i] = document.BodyElement{Paragraph: &paras[i]}
+		body[i] = BodyElement{Paragraph: &paras[i]}
 	}
 	return body
 }
 
 func TestLayout_LongParagraphWraps(t *testing.T) {
 	text := strings.TrimSpace(strings.Repeat("word ", 200))
-	lines := layoutParagraph(&fakeRenderer{}, para(document.AlignLeft, false, run(text, 12)), contentWidthPt)
+	lines := layoutParagraph(&fakeRenderer{}, para(AlignLeft, false, run(text, 12)), contentWidthPt)
 
 	if len(lines) < 2 {
 		t.Fatalf("expected the long paragraph to wrap into multiple lines, got %d", len(lines))
@@ -107,7 +105,7 @@ func TestLayout_LongParagraphWraps(t *testing.T) {
 }
 
 func TestLayout_MixedSizeLineHeight(t *testing.T) {
-	p := para(document.AlignLeft, false, run("small", 10), run(" big", 20))
+	p := para(AlignLeft, false, run("small", 10), run(" big", 20))
 	lines := layoutParagraph(&fakeRenderer{}, p, contentWidthPt)
 
 	if len(lines) != 1 {
@@ -125,7 +123,7 @@ func TestLayout_OversizedWord(t *testing.T) {
 	// A single word far wider than the content width must land on its own line
 	// and be allowed to overflow rather than looping forever.
 	huge := strings.Repeat("x", 400)
-	lines := layoutParagraph(&fakeRenderer{}, para(document.AlignLeft, false, run(huge, 12)), contentWidthPt)
+	lines := layoutParagraph(&fakeRenderer{}, para(AlignLeft, false, run(huge, 12)), contentWidthPt)
 
 	if len(lines) != 1 {
 		t.Fatalf("expected the oversized word on one line, got %d lines", len(lines))
@@ -136,12 +134,12 @@ func TestLayout_OversizedWord(t *testing.T) {
 }
 
 func TestRender_Paginates(t *testing.T) {
-	var paras []document.Paragraph
+	var paras []Paragraph
 	for range 200 {
-		paras = append(paras, para(document.AlignLeft, false, run("line of text", 12)))
+		paras = append(paras, para(AlignLeft, false, run("line of text", 12)))
 	}
 	f := &fakeRenderer{}
-	(&Converter{doc: &document.Document{Body: bodyOf(paras...)}}).render(f)
+	(&Converter{doc: &Document{Body: bodyOf(paras...)}}).render(f)
 
 	if f.page < 2 {
 		t.Fatalf("expected multiple pages, got %d", f.page)
@@ -150,8 +148,8 @@ func TestRender_Paginates(t *testing.T) {
 
 func TestRender_CenteredLineIsCentered(t *testing.T) {
 	f := &fakeRenderer{}
-	(&Converter{doc: &document.Document{Body: bodyOf(
-		para(document.AlignCenter, false, run("hi", 12)),
+	(&Converter{doc: &Document{Body: bodyOf(
+		para(AlignCenter, false, run("hi", 12)),
 	)}}).render(f)
 
 	if len(f.draws) != 1 {
@@ -166,9 +164,9 @@ func TestRender_CenteredLineIsCentered(t *testing.T) {
 
 func TestRender_ExplicitPageBreakStartsNewPage(t *testing.T) {
 	f := &fakeRenderer{}
-	(&Converter{doc: &document.Document{Body: bodyOf(
-		para(document.AlignLeft, false, run("first", 12)),
-		para(document.AlignLeft, true, run("second", 12)),
+	(&Converter{doc: &Document{Body: bodyOf(
+		para(AlignLeft, false, run("first", 12)),
+		para(AlignLeft, true, run("second", 12)),
 	)}}).render(f)
 
 	if len(f.draws) != 2 {
@@ -186,8 +184,8 @@ func TestRender_ExplicitPageBreakStartsNewPage(t *testing.T) {
 
 func TestRender_LeftAndRightIndentShiftsAndNarrowsTheLine(t *testing.T) {
 	f := &fakeRenderer{}
-	p := paraWithIndent(document.AlignLeft, document.Indent{LeftPt: 36, RightPt: 18}, run("hi", 12))
-	(&Converter{doc: &document.Document{Body: bodyOf(p)}}).render(f)
+	p := paraWithIndent(AlignLeft, Indent{LeftPt: 36, RightPt: 18}, run("hi", 12))
+	(&Converter{doc: &Document{Body: bodyOf(p)}}).render(f)
 
 	if len(f.draws) != 1 {
 		t.Fatalf("expected one draw, got %d", len(f.draws))
@@ -199,10 +197,10 @@ func TestRender_LeftAndRightIndentShiftsAndNarrowsTheLine(t *testing.T) {
 
 func TestDrawLine_FirstLineOffsetAppliesOnlyToFirstLine(t *testing.T) {
 	f := &fakeRenderer{}
-	ln := layoutParagraph(&fakeRenderer{}, para(document.AlignLeft, false, run("hi", 12)), contentWidthPt)[0]
+	ln := layoutParagraph(&fakeRenderer{}, para(AlignLeft, false, run("hi", 12)), contentWidthPt)[0]
 
-	drawLine(f, ln, document.AlignLeft, marginPt, contentWidthPt, 100, true, 36, true)
-	drawLine(f, ln, document.AlignLeft, marginPt, contentWidthPt, 120, true, 36, false)
+	drawLine(f, ln, AlignLeft, marginPt, contentWidthPt, 100, true, 36, true)
+	drawLine(f, ln, AlignLeft, marginPt, contentWidthPt, 120, true, 36, false)
 
 	if len(f.draws) != 2 {
 		t.Fatalf("expected 2 draws, got %d", len(f.draws))
@@ -217,9 +215,9 @@ func TestDrawLine_FirstLineOffsetAppliesOnlyToFirstLine(t *testing.T) {
 
 func TestDrawLine_HangingIndentShiftsFirstLineLeftWithoutClamping(t *testing.T) {
 	f := &fakeRenderer{}
-	ln := layoutParagraph(&fakeRenderer{}, para(document.AlignLeft, false, run("hi", 12)), contentWidthPt)[0]
+	ln := layoutParagraph(&fakeRenderer{}, para(AlignLeft, false, run("hi", 12)), contentWidthPt)[0]
 
-	drawLine(f, ln, document.AlignLeft, marginPt, contentWidthPt, 100, true, -36, true)
+	drawLine(f, ln, AlignLeft, marginPt, contentWidthPt, 100, true, -36, true)
 
 	if len(f.draws) != 1 {
 		t.Fatalf("expected 1 draw, got %d", len(f.draws))
@@ -231,8 +229,8 @@ func TestDrawLine_HangingIndentShiftsFirstLineLeftWithoutClamping(t *testing.T) 
 
 func TestRender_SpaceBeforeShiftsParagraphDown(t *testing.T) {
 	f := &fakeRenderer{}
-	p := paraWithSpacing(document.AlignLeft, document.Spacing{BeforePt: 20}, run("hi", 12))
-	(&Converter{doc: &document.Document{Body: bodyOf(p)}}).render(f)
+	p := paraWithSpacing(AlignLeft, Spacing{BeforePt: 20}, run("hi", 12))
+	(&Converter{doc: &Document{Body: bodyOf(p)}}).render(f)
 
 	if len(f.draws) != 1 {
 		t.Fatalf("expected one draw, got %d", len(f.draws))
@@ -245,9 +243,9 @@ func TestRender_SpaceBeforeShiftsParagraphDown(t *testing.T) {
 
 func TestRender_SpaceAfterShiftsNextParagraphDown(t *testing.T) {
 	f := &fakeRenderer{}
-	first := paraWithSpacing(document.AlignLeft, document.Spacing{AfterPt: 20}, run("first", 12))
-	second := para(document.AlignLeft, false, run("second", 12))
-	(&Converter{doc: &document.Document{Body: bodyOf(first, second)}}).render(f)
+	first := paraWithSpacing(AlignLeft, Spacing{AfterPt: 20}, run("first", 12))
+	second := para(AlignLeft, false, run("second", 12))
+	(&Converter{doc: &Document{Body: bodyOf(first, second)}}).render(f)
 
 	if len(f.draws) != 2 {
 		t.Fatalf("expected 2 draws, got %d", len(f.draws))
@@ -260,16 +258,16 @@ func TestRender_SpaceAfterShiftsNextParagraphDown(t *testing.T) {
 
 func TestRender_SpaceAfterShiftsFollowingTableDown(t *testing.T) {
 	f := &fakeRenderer{}
-	p := paraWithSpacing(document.AlignLeft, document.Spacing{AfterPt: 20}, run("hi", 12))
-	tbl := document.Table{
+	p := paraWithSpacing(AlignLeft, Spacing{AfterPt: 20}, run("hi", 12))
+	tbl := Table{
 		ColumnWidths: []float64{100},
-		Rows: []document.Row{mkRow(document.Cell{
+		Rows: []Row{mkRow(Cell{
 			ColSpan:    1,
-			Paragraphs: []document.Paragraph{para(document.AlignLeft, false, run("cell", 12))},
+			Paragraphs: []Paragraph{para(AlignLeft, false, run("cell", 12))},
 		})},
 	}
-	body := []document.BodyElement{{Paragraph: &p}, {Table: &tbl}}
-	(&Converter{doc: &document.Document{Body: body}}).render(f)
+	body := []BodyElement{{Paragraph: &p}, {Table: &tbl}}
+	(&Converter{doc: &Document{Body: body}}).render(f)
 
 	if len(f.draws) != 2 {
 		t.Fatalf("expected 2 draws (paragraph + cell text), got %d", len(f.draws))
@@ -290,14 +288,14 @@ func lineCount(f *fakeRenderer) int {
 	return len(seen)
 }
 
-func paraWithLineSpacing(rule document.LineSpacingRule, value float64, runs ...document.Run) document.Paragraph {
-	return document.Paragraph{Runs: runs, Props: document.ParagraphProperties{
-		Spacing: document.Spacing{LineRule: rule, LineValue: value},
+func paraWithLineSpacing(rule LineSpacingRule, value float64, runs ...Run) Paragraph {
+	return Paragraph{Runs: runs, Props: ParagraphProperties{
+		Spacing: Spacing{LineRule: rule, LineValue: value},
 	}}
 }
 
 func TestLayout_MultipleLineSpacingScalesHeight(t *testing.T) {
-	p := paraWithLineSpacing(document.LineSpacingMultiple, 1.15, run("hi", 20))
+	p := paraWithLineSpacing(LineSpacingMultiple, 1.15, run("hi", 20))
 	lines := layoutParagraph(&fakeRenderer{}, p, contentWidthPt)
 	// A "multiple" counts natural single-spaced lines, so 1.15 scales the
 	// natural height (20 × lineSpacing), landing above single spacing.
@@ -310,8 +308,8 @@ func TestLayout_MultipleLineSpacingScalesHeight(t *testing.T) {
 }
 
 func TestLayout_ExactLineSpacingIsFontIndependent(t *testing.T) {
-	small := layoutParagraph(&fakeRenderer{}, paraWithLineSpacing(document.LineSpacingExact, 18, run("s", 8)), contentWidthPt)
-	big := layoutParagraph(&fakeRenderer{}, paraWithLineSpacing(document.LineSpacingExact, 18, run("b", 40)), contentWidthPt)
+	small := layoutParagraph(&fakeRenderer{}, paraWithLineSpacing(LineSpacingExact, 18, run("s", 8)), contentWidthPt)
+	big := layoutParagraph(&fakeRenderer{}, paraWithLineSpacing(LineSpacingExact, 18, run("b", 40)), contentWidthPt)
 	if small[0].height != 18 || big[0].height != 18 {
 		t.Fatalf("exact line heights = %.2f / %.2f, want 18 / 18 (independent of font size)", small[0].height, big[0].height)
 	}
@@ -319,14 +317,14 @@ func TestLayout_ExactLineSpacingIsFontIndependent(t *testing.T) {
 
 func TestRender_WrapWidthFollowsDocumentGeometry(t *testing.T) {
 	text := strings.TrimSpace(strings.Repeat("word ", 60))
-	p := para(document.AlignLeft, false, run(text, 12))
+	p := para(AlignLeft, false, run(text, 12))
 	// Tall pages so pagination never interferes; only the width differs.
-	narrow := document.PageGeometry{WidthPt: 300, HeightPt: 4000, MarginTopPt: 72, MarginRightPt: 72, MarginBottomPt: 72, MarginLeftPt: 72}
-	wide := document.PageGeometry{WidthPt: 900, HeightPt: 4000, MarginTopPt: 72, MarginRightPt: 72, MarginBottomPt: 72, MarginLeftPt: 72}
+	narrow := PageGeometry{WidthPt: 300, HeightPt: 4000, MarginTopPt: 72, MarginRightPt: 72, MarginBottomPt: 72, MarginLeftPt: 72}
+	wide := PageGeometry{WidthPt: 900, HeightPt: 4000, MarginTopPt: 72, MarginRightPt: 72, MarginBottomPt: 72, MarginLeftPt: 72}
 
 	fN, fW := &fakeRenderer{}, &fakeRenderer{}
-	(&Converter{doc: &document.Document{Body: bodyOf(p), Geometry: narrow}}).render(fN)
-	(&Converter{doc: &document.Document{Body: bodyOf(p), Geometry: wide}}).render(fW)
+	(&Converter{doc: &Document{Body: bodyOf(p), Geometry: narrow}}).render(fN)
+	(&Converter{doc: &Document{Body: bodyOf(p), Geometry: wide}}).render(fW)
 
 	if lineCount(fN) <= lineCount(fW) {
 		t.Fatalf("narrow geometry should wrap into more lines: narrow=%d wide=%d", lineCount(fN), lineCount(fW))
@@ -335,7 +333,7 @@ func TestRender_WrapWidthFollowsDocumentGeometry(t *testing.T) {
 
 func TestConverter_DefaultsToA4WhenNoGeometry(t *testing.T) {
 	// A document built without geometry (zero-value) must fall back to A4/1-inch.
-	g := (&Converter{doc: &document.Document{}}).geometry()
+	g := (&Converter{doc: &Document{}}).geometry()
 	if g.WidthPt != 595.28 || g.HeightPt != 841.89 {
 		t.Fatalf("default geometry = %v × %v, want 595.28 × 841.89 (A4)", g.WidthPt, g.HeightPt)
 	}
@@ -347,7 +345,7 @@ func TestConverter_DefaultsToA4WhenNoGeometry(t *testing.T) {
 func TestRender_MultipleSpacesKeepWidth(t *testing.T) {
 	f := &fakeRenderer{}
 	// fakeRenderer: each glyph is size×0.5 wide → "a"=5, four spaces=20, "b"=5.
-	(&Converter{doc: &document.Document{Body: bodyOf(para(document.AlignLeft, false, run("a    b", 10)))}}).render(f)
+	(&Converter{doc: &Document{Body: bodyOf(para(AlignLeft, false, run("a    b", 10)))}}).render(f)
 
 	if len(f.draws) != 2 {
 		t.Fatalf("expected 2 word draws, got %d", len(f.draws))
@@ -360,7 +358,7 @@ func TestRender_MultipleSpacesKeepWidth(t *testing.T) {
 func TestRender_LeadingSpacesIndentLeftFirstLine(t *testing.T) {
 	f := &fakeRenderer{}
 	// Two leading spaces at size 10 → 10pt first-line indent.
-	(&Converter{doc: &document.Document{Body: bodyOf(para(document.AlignLeft, false, run("  hi", 10)))}}).render(f)
+	(&Converter{doc: &Document{Body: bodyOf(para(AlignLeft, false, run("  hi", 10)))}}).render(f)
 
 	if len(f.draws) != 1 {
 		t.Fatalf("expected 1 draw, got %d", len(f.draws))
@@ -373,8 +371,8 @@ func TestRender_LeadingSpacesIndentLeftFirstLine(t *testing.T) {
 func TestRender_SoftWrapDropsLeadingSpace(t *testing.T) {
 	f := &fakeRenderer{}
 	text := strings.TrimSpace(strings.Repeat("word ", 60))
-	narrow := document.PageGeometry{WidthPt: 200, HeightPt: 4000, MarginTopPt: 72, MarginRightPt: 72, MarginBottomPt: 72, MarginLeftPt: 72}
-	(&Converter{doc: &document.Document{Body: bodyOf(para(document.AlignLeft, false, run(text, 10))), Geometry: narrow}}).render(f)
+	narrow := PageGeometry{WidthPt: 200, HeightPt: 4000, MarginTopPt: 72, MarginRightPt: 72, MarginBottomPt: 72, MarginLeftPt: 72}
+	(&Converter{doc: &Document{Body: bodyOf(para(AlignLeft, false, run(text, 10))), Geometry: narrow}}).render(f)
 
 	// Group draws by baseline; the second line's first word must start at the
 	// content edge (no leading-space offset carried across the wrap).
@@ -392,7 +390,7 @@ func TestRender_SoftWrapDropsLeadingSpace(t *testing.T) {
 
 func TestRender_CenteredIgnoresLeadingSpaces(t *testing.T) {
 	f := &fakeRenderer{}
-	(&Converter{doc: &document.Document{Body: bodyOf(para(document.AlignCenter, false, run("  hi", 10)))}}).render(f)
+	(&Converter{doc: &Document{Body: bodyOf(para(AlignCenter, false, run("  hi", 10)))}}).render(f)
 
 	if len(f.draws) != 1 {
 		t.Fatalf("expected 1 draw, got %d", len(f.draws))
@@ -404,12 +402,12 @@ func TestRender_CenteredIgnoresLeadingSpaces(t *testing.T) {
 	}
 }
 
-func brk() document.Run { return document.Run{LineBreak: true} }
+func brk() Run { return Run{LineBreak: true} }
 
 func TestRender_LineBreakStartsNewLine(t *testing.T) {
 	f := &fakeRenderer{}
-	p := document.Paragraph{Runs: []document.Run{run("A", 12), brk(), run("B", 12)}}
-	(&Converter{doc: &document.Document{Body: bodyOf(p)}}).render(f)
+	p := Paragraph{Runs: []Run{run("A", 12), brk(), run("B", 12)}}
+	(&Converter{doc: &Document{Body: bodyOf(p)}}).render(f)
 
 	if len(f.draws) != 2 {
 		t.Fatalf("expected 2 draws, got %d", len(f.draws))
@@ -421,10 +419,10 @@ func TestRender_LineBreakStartsNewLine(t *testing.T) {
 
 func TestRender_LeadingLineBreakEmitsBlankLine(t *testing.T) {
 	f := &fakeRenderer{}
-	withBreak := document.Paragraph{Runs: []document.Run{brk(), run("hi", 12)}}
-	(&Converter{doc: &document.Document{Body: bodyOf(withBreak)}}).render(f)
+	withBreak := Paragraph{Runs: []Run{brk(), run("hi", 12)}}
+	(&Converter{doc: &Document{Body: bodyOf(withBreak)}}).render(f)
 	withoutBreak := &fakeRenderer{}
-	(&Converter{doc: &document.Document{Body: bodyOf(para(document.AlignLeft, false, run("hi", 12)))}}).render(withoutBreak)
+	(&Converter{doc: &Document{Body: bodyOf(para(AlignLeft, false, run("hi", 12)))}}).render(withoutBreak)
 
 	if len(f.draws) != 1 {
 		t.Fatalf("expected 1 draw, got %d", len(f.draws))
@@ -436,11 +434,11 @@ func TestRender_LeadingLineBreakEmitsBlankLine(t *testing.T) {
 
 func TestRender_LineBreakRespectsCenterAlignment(t *testing.T) {
 	f := &fakeRenderer{}
-	p := document.Paragraph{
-		Runs:  []document.Run{run("hi", 12), brk(), run("yo", 12)},
-		Props: document.ParagraphProperties{Alignment: document.AlignCenter},
+	p := Paragraph{
+		Runs:  []Run{run("hi", 12), brk(), run("yo", 12)},
+		Props: ParagraphProperties{Alignment: AlignCenter},
 	}
-	(&Converter{doc: &document.Document{Body: bodyOf(p)}}).render(f)
+	(&Converter{doc: &Document{Body: bodyOf(p)}}).render(f)
 
 	if len(f.draws) != 2 {
 		t.Fatalf("expected 2 draws, got %d", len(f.draws))
@@ -457,8 +455,8 @@ func TestRender_LeadingSpacesIndentLineAfterBreak(t *testing.T) {
 	f := &fakeRenderer{}
 	// A <w:br/> then a run whose text starts with two spaces: the line after the
 	// hard break keeps its leading-space indent (unlike a soft-wrap continuation).
-	p := document.Paragraph{Runs: []document.Run{brk(), run("  hi", 10)}}
-	(&Converter{doc: &document.Document{Body: bodyOf(p)}}).render(f)
+	p := Paragraph{Runs: []Run{brk(), run("  hi", 10)}}
+	(&Converter{doc: &Document{Body: bodyOf(p)}}).render(f)
 
 	if len(f.draws) != 1 {
 		t.Fatalf("expected 1 draw, got %d", len(f.draws))

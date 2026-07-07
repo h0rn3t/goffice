@@ -209,7 +209,7 @@ type Document struct {
 func Open(path string) (*Document, error) {
 	r, err := zip.OpenReader(path)
 	if err != nil {
-		return nil, fmt.Errorf("goffice: open docx %q: %w", path, err)
+		return nil, fmt.Errorf("docx2pdf: open docx %q: %w", path, err)
 	}
 	defer func() { _ = r.Close() }()
 
@@ -223,18 +223,18 @@ func Open(path string) (*Document, error) {
 		}
 	}
 	if main == nil {
-		return nil, fmt.Errorf("goffice: %q is not a valid docx: missing word/document.xml", path)
+		return nil, fmt.Errorf("docx2pdf: %q is not a valid docx: missing word/document.xml", path)
 	}
 
 	rc, err := main.Open()
 	if err != nil {
-		return nil, fmt.Errorf("goffice: read word/document.xml in %q: %w", path, err)
+		return nil, fmt.Errorf("docx2pdf: read word/document.xml in %q: %w", path, err)
 	}
 	defer func() { _ = rc.Close() }()
 
 	var xdoc xmlDocument
 	if err := xml.NewDecoder(rc).Decode(&xdoc); err != nil {
-		return nil, fmt.Errorf("goffice: parse word/document.xml in %q: %w", path, err)
+		return nil, fmt.Errorf("docx2pdf: parse word/document.xml in %q: %w", path, err)
 	}
 
 	xs := readStyles(styles)

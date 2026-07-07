@@ -1,4 +1,4 @@
-package convert_test
+package document_test
 
 import (
 	"bytes"
@@ -10,9 +10,8 @@ import (
 	"testing"
 	"unicode/utf16"
 
-	"github.com/h0rn3t/goffice/convert"
-	"github.com/h0rn3t/goffice/document"
-	"github.com/h0rn3t/goffice/internal/docxtest"
+	"github.com/h0rn3t/docx2pdf/document"
+	"github.com/h0rn3t/docx2pdf/internal/docxtest"
 )
 
 type fixture struct {
@@ -87,7 +86,7 @@ func TestConvertFixturesEndToEnd(t *testing.T) {
 			doc := openDoc(t, fx.body)
 
 			var buf bytes.Buffer
-			if err := convert.ConvertToPdf(doc).Write(&buf); err != nil {
+			if err := document.ConvertToPdf(doc).Write(&buf); err != nil {
 				t.Fatalf("Write: %v", err)
 			}
 			raw := buf.Bytes()
@@ -117,7 +116,7 @@ func TestWriteToFile_OK(t *testing.T) {
 	doc := openDoc(t, `<w:p><w:r><w:t>File output</w:t></w:r></w:p>`)
 	path := filepath.Join(t.TempDir(), "out.pdf")
 
-	if err := convert.ConvertToPdf(doc).WriteToFile(path); err != nil {
+	if err := document.ConvertToPdf(doc).WriteToFile(path); err != nil {
 		t.Fatalf("WriteToFile: %v", err)
 	}
 	data, err := os.ReadFile(path)
@@ -134,7 +133,7 @@ func TestWriteToFile_UnwritableDestination(t *testing.T) {
 	// A file inside a non-existent directory cannot be created.
 	path := filepath.Join(t.TempDir(), "missing-dir", "out.pdf")
 
-	if err := convert.ConvertToPdf(doc).WriteToFile(path); err == nil {
+	if err := document.ConvertToPdf(doc).WriteToFile(path); err == nil {
 		t.Fatal("expected an error writing to an uncreatable destination")
 	}
 }
@@ -173,7 +172,7 @@ func TestConvertTableWithOnlyNamedStyleRendersBorders(t *testing.T) {
 	doc := openDocWithStyles(t, body, styles)
 
 	var buf bytes.Buffer
-	if err := convert.ConvertToPdf(doc).Write(&buf); err != nil {
+	if err := document.ConvertToPdf(doc).Write(&buf); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	content := decodePDFStreams(buf.Bytes())
@@ -212,7 +211,7 @@ func decodePDFStreams(raw []byte) []byte {
 
 // decodePDFText extracts the text actually drawn in a produced PDF, so tests
 // can assert on what was rendered. convert always draws through an embedded
-// UTF-8 (Identity-H) font (see convert/fonts), and fpdf's Text() encodes
+// UTF-8 (Identity-H) font (see document/fonts), and fpdf's Text() encodes
 // drawn text as UTF-16BE inside "(...) Tj" literal-string operators, so
 // recovering it just requires un-escaping the PDF string syntax and reading
 // the bytes back as UTF-16BE.

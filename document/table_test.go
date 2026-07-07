@@ -1,21 +1,19 @@
-package convert
+package document
 
 import (
 	"testing"
-
-	"github.com/h0rn3t/goffice/document"
 )
 
-func mkCell(colSpan int, vmerge document.VMergeState, paras ...document.Paragraph) document.Cell {
-	return document.Cell{Paragraphs: paras, ColSpan: colSpan, VMerge: vmerge}
+func mkCell(colSpan int, vmerge VMergeState, paras ...Paragraph) Cell {
+	return Cell{Paragraphs: paras, ColSpan: colSpan, VMerge: vmerge}
 }
 
-func mkRow(cells ...document.Cell) document.Row {
-	return document.Row{Cells: cells}
+func mkRow(cells ...Cell) Row {
+	return Row{Cells: cells}
 }
 
 func TestLayoutTable_ColumnOffsets(t *testing.T) {
-	tbl := document.Table{ColumnWidths: []float64{50, 30, 20}}
+	tbl := Table{ColumnWidths: []float64{50, 30, 20}}
 	tl := layoutTable(&fakeRenderer{}, tbl)
 
 	want := []float64{0, 50, 80}
@@ -27,7 +25,7 @@ func TestLayoutTable_ColumnOffsets(t *testing.T) {
 }
 
 func TestLayoutTable_ColumnOffsetsIncludeTableIndent(t *testing.T) {
-	tbl := document.Table{ColumnWidths: []float64{50, 30, 20}, IndentPt: 100}
+	tbl := Table{ColumnWidths: []float64{50, 30, 20}, IndentPt: 100}
 	tl := layoutTable(&fakeRenderer{}, tbl)
 
 	want := []float64{100, 150, 180}
@@ -40,12 +38,12 @@ func TestLayoutTable_ColumnOffsetsIncludeTableIndent(t *testing.T) {
 
 func TestRenderTable_CellsAtColumnPositions(t *testing.T) {
 	f := &fakeRenderer{}
-	tbl := document.Table{
+	tbl := Table{
 		ColumnWidths: []float64{100, 200},
-		Rows: []document.Row{
+		Rows: []Row{
 			mkRow(
-				mkCell(1, document.VMergeNone, para(document.AlignLeft, false, run("A1", 12))),
-				mkCell(1, document.VMergeNone, para(document.AlignLeft, false, run("B1", 12))),
+				mkCell(1, VMergeNone, para(AlignLeft, false, run("A1", 12))),
+				mkCell(1, VMergeNone, para(AlignLeft, false, run("B1", 12))),
 			),
 		},
 	}
@@ -65,12 +63,12 @@ func TestRenderTable_CellsAtColumnPositions(t *testing.T) {
 func TestLayoutTable_RowHeightFitsTallestCell(t *testing.T) {
 	// Narrow column forces this cell to wrap into several lines; the other
 	// cell is a single short word.
-	tall := para(document.AlignLeft, false, run("aa bb cc dd ee", 12))
-	short := para(document.AlignLeft, false, run("x", 12))
-	tbl := document.Table{
+	tall := para(AlignLeft, false, run("aa bb cc dd ee", 12))
+	short := para(AlignLeft, false, run("x", 12))
+	tbl := Table{
 		ColumnWidths: []float64{20, 100},
-		Rows: []document.Row{
-			mkRow(mkCell(1, document.VMergeNone, tall), mkCell(1, document.VMergeNone, short)),
+		Rows: []Row{
+			mkRow(mkCell(1, VMergeNone, tall), mkCell(1, VMergeNone, short)),
 		},
 	}
 	tl := layoutTable(&fakeRenderer{}, tbl)
@@ -86,14 +84,14 @@ func TestLayoutTable_RowHeightFitsTallestCell(t *testing.T) {
 
 func TestRenderTable_HorizontalMergeSpansCombinedWidthNoInteriorBorder(t *testing.T) {
 	f := &fakeRenderer{}
-	borders := document.CellBorders{Top: document.BorderSide{Style: "single", WidthPt: 1, Color: "#000000"}}
-	tbl := document.Table{
+	borders := CellBorders{Top: BorderSide{Style: "single", WidthPt: 1, Color: "#000000"}}
+	tbl := Table{
 		ColumnWidths: []float64{50, 50},
-		Rows: []document.Row{
-			mkRow(document.Cell{
+		Rows: []Row{
+			mkRow(Cell{
 				ColSpan:    2,
 				Borders:    borders,
-				Paragraphs: []document.Paragraph{para(document.AlignLeft, false, run("wide", 12))},
+				Paragraphs: []Paragraph{para(AlignLeft, false, run("wide", 12))},
 			}),
 		},
 	}
@@ -108,12 +106,12 @@ func TestRenderTable_HorizontalMergeSpansCombinedWidthNoInteriorBorder(t *testin
 }
 
 func TestRenderTable_VerticalMergeSpansCombinedHeightAndSkipsContinueDraw(t *testing.T) {
-	restart := document.Cell{VMerge: document.VMergeRestart, ColSpan: 1,
-		Paragraphs: []document.Paragraph{para(document.AlignLeft, false, run("top", 12))}}
-	continued := document.Cell{VMerge: document.VMergeContinue, ColSpan: 1}
-	tbl := document.Table{
+	restart := Cell{VMerge: VMergeRestart, ColSpan: 1,
+		Paragraphs: []Paragraph{para(AlignLeft, false, run("top", 12))}}
+	continued := Cell{VMerge: VMergeContinue, ColSpan: 1}
+	tbl := Table{
 		ColumnWidths: []float64{100},
-		Rows:         []document.Row{mkRow(restart), mkRow(continued)},
+		Rows:         []Row{mkRow(restart), mkRow(continued)},
 	}
 
 	f := &fakeRenderer{}
@@ -132,9 +130,9 @@ func TestRenderTable_VerticalMergeSpansCombinedHeightAndSkipsContinueDraw(t *tes
 
 func TestRenderTable_CellShadingFills(t *testing.T) {
 	f := &fakeRenderer{}
-	tbl := document.Table{
+	tbl := Table{
 		ColumnWidths: []float64{100},
-		Rows:         []document.Row{mkRow(document.Cell{ColSpan: 1, Shading: "#D9D9D9"})},
+		Rows:         []Row{mkRow(Cell{ColSpan: 1, Shading: "#D9D9D9"})},
 	}
 	renderTable(f, tbl, testPage, marginPt, true)
 
@@ -151,13 +149,13 @@ func TestRenderTable_CellShadingFills(t *testing.T) {
 
 func TestRenderTable_BordersPerSide(t *testing.T) {
 	f := &fakeRenderer{}
-	borders := document.CellBorders{
-		Top:    document.BorderSide{Style: "single", WidthPt: 1, Color: "#111111"},
-		Bottom: document.BorderSide{Style: "double", WidthPt: 2, Color: "#222222"},
+	borders := CellBorders{
+		Top:    BorderSide{Style: "single", WidthPt: 1, Color: "#111111"},
+		Bottom: BorderSide{Style: "double", WidthPt: 2, Color: "#222222"},
 	}
-	tbl := document.Table{
+	tbl := Table{
 		ColumnWidths: []float64{100},
-		Rows:         []document.Row{mkRow(document.Cell{ColSpan: 1, Borders: borders})},
+		Rows:         []Row{mkRow(Cell{ColSpan: 1, Borders: borders})},
 	}
 	renderTable(f, tbl, testPage, marginPt, true)
 
@@ -174,14 +172,14 @@ func TestRenderTable_BordersPerSide(t *testing.T) {
 
 func TestRenderTable_PaginatesWithoutSplittingRows(t *testing.T) {
 	f := &fakeRenderer{}
-	var rows []document.Row
+	var rows []Row
 	for range 200 {
-		rows = append(rows, mkRow(document.Cell{
+		rows = append(rows, mkRow(Cell{
 			ColSpan:    1,
-			Paragraphs: []document.Paragraph{para(document.AlignLeft, false, run("row", 12))},
+			Paragraphs: []Paragraph{para(AlignLeft, false, run("row", 12))},
 		}))
 	}
-	tbl := document.Table{ColumnWidths: []float64{100}, Rows: rows}
+	tbl := Table{ColumnWidths: []float64{100}, Rows: rows}
 	renderTable(f, tbl, testPage, marginPt, true)
 
 	if f.page < 2 {
@@ -194,13 +192,13 @@ func TestRenderTable_PaginatesWithoutSplittingRows(t *testing.T) {
 
 func TestRenderTable_CellParagraphIndentShiftsText(t *testing.T) {
 	f := &fakeRenderer{}
-	indented := document.Cell{
+	indented := Cell{
 		ColSpan:    1,
-		Paragraphs: []document.Paragraph{paraWithIndent(document.AlignLeft, document.Indent{LeftPt: 20}, run("hi", 12))},
+		Paragraphs: []Paragraph{paraWithIndent(AlignLeft, Indent{LeftPt: 20}, run("hi", 12))},
 	}
-	tbl := document.Table{
+	tbl := Table{
 		ColumnWidths: []float64{100},
-		Rows:         []document.Row{mkRow(indented)},
+		Rows:         []Row{mkRow(indented)},
 	}
 	renderTable(f, tbl, testPage, marginPt, true)
 
@@ -214,20 +212,20 @@ func TestRenderTable_CellParagraphIndentShiftsText(t *testing.T) {
 
 func TestRenderTable_NestedTableIndentIsIndependentOfParent(t *testing.T) {
 	f := &fakeRenderer{}
-	inner := document.Table{
+	inner := Table{
 		IndentPt:     20,
 		ColumnWidths: []float64{50},
-		Rows: []document.Row{mkRow(document.Cell{
+		Rows: []Row{mkRow(Cell{
 			ColSpan:    1,
-			Paragraphs: []document.Paragraph{para(document.AlignLeft, false, run("inner", 12))},
+			Paragraphs: []Paragraph{para(AlignLeft, false, run("inner", 12))},
 		})},
 	}
-	outer := document.Table{
+	outer := Table{
 		IndentPt:     40,
 		ColumnWidths: []float64{100},
-		Rows: []document.Row{mkRow(document.Cell{
+		Rows: []Row{mkRow(Cell{
 			ColSpan:    1,
-			Paragraphs: []document.Paragraph{para(document.AlignLeft, false, run("outer", 12))},
+			Paragraphs: []Paragraph{para(AlignLeft, false, run("outer", 12))},
 			Nested:     &inner,
 		})},
 	}
@@ -248,18 +246,18 @@ func TestRenderTable_NestedTableIndentIsIndependentOfParent(t *testing.T) {
 
 func TestRenderTable_NestedTableRendersWithinParentCell(t *testing.T) {
 	f := &fakeRenderer{}
-	inner := document.Table{
+	inner := Table{
 		ColumnWidths: []float64{50},
-		Rows: []document.Row{mkRow(document.Cell{
+		Rows: []Row{mkRow(Cell{
 			ColSpan:    1,
-			Paragraphs: []document.Paragraph{para(document.AlignLeft, false, run("inner", 12))},
+			Paragraphs: []Paragraph{para(AlignLeft, false, run("inner", 12))},
 		})},
 	}
-	outer := document.Table{
+	outer := Table{
 		ColumnWidths: []float64{100},
-		Rows: []document.Row{mkRow(document.Cell{
+		Rows: []Row{mkRow(Cell{
 			ColSpan:    1,
-			Paragraphs: []document.Paragraph{para(document.AlignLeft, false, run("outer", 12))},
+			Paragraphs: []Paragraph{para(AlignLeft, false, run("outer", 12))},
 			Nested:     &inner,
 		})},
 	}

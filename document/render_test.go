@@ -181,6 +181,30 @@ func TestConvertTableWithOnlyNamedStyleRendersBorders(t *testing.T) {
 	}
 }
 
+// TestConvertBandedTableStyleRendersFill is a smoke check that band1Horz
+// shading from w:tblStylePr reaches the PDF as a filled path.
+func TestConvertBandedTableStyleRendersFill(t *testing.T) {
+	body := `<w:tbl><w:tblPr><w:tblStyle w:val="Banded"/>` +
+		`<w:tblLook w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="0" w:noVBand="1"/>` +
+		`</w:tblPr>` +
+		`<w:tr><w:tc><w:p><w:r><w:t>a</w:t></w:r></w:p></w:tc></w:tr>` +
+		`<w:tr><w:tc><w:p><w:r><w:t>b</w:t></w:r></w:p></w:tc></w:tr></w:tbl>`
+	styles := `<w:style w:type="table" w:styleId="Banded">` +
+		`<w:tblStylePr w:type="band1Horz"><w:tcPr><w:shd w:fill="D6DCE4"/></w:tcPr></w:tblStylePr>` +
+		`</w:style>`
+	doc := openDocWithStyles(t, body, styles)
+
+	var buf bytes.Buffer
+	if err := document.ConvertToPdf(doc).Write(&buf); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	content := decodePDFStreams(buf.Bytes())
+	// Cell fill is drawn with the 'f' operator after an RGB set ('rg').
+	if !bytes.Contains(content, []byte(" rg")) || !bytes.Contains(content, []byte(" f")) {
+		t.Fatalf("expected a filled cell shading path in the rendered PDF content, got:\n%s", content)
+	}
+}
+
 // decodePDFStreams concatenates every decompressed page content stream in a
 // produced PDF, giving tests raw access to the drawing operators fpdf wrote
 // (text, fills, strokes, ...).

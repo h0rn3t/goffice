@@ -274,6 +274,19 @@ type xmlTblPr struct {
 	StyleID *xmlVal     `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblStyle"`
 	Borders *xmlBorders `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblBorders"`
 	Ind     *xmlTblInd  `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblInd"`
+	Look    *xmlTblLook `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblLook"`
+}
+
+// xmlTblLook is <w:tblLook>: which conditional table-style regions are active.
+// Attributes are the modern form; legacy w:val bitmasks are also accepted.
+type xmlTblLook struct {
+	Val         string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main val,attr"`
+	FirstRow    string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main firstRow,attr"`
+	LastRow     string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main lastRow,attr"`
+	FirstColumn string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main firstColumn,attr"`
+	LastColumn  string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main lastColumn,attr"`
+	NoHBand     string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main noHBand,attr"`
+	NoVBand     string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main noVBand,attr"`
 }
 
 // xmlTblInd is <w:tblInd>: the table's own left indent from its containing
@@ -341,10 +354,10 @@ type xmlBorder struct {
 
 // --- Table styles (word/styles.xml) ---
 //
-// Only what a table style contributes to border/shading resolution is
-// modeled: its own (non-conditional) w:tblPr/w:tblBorders and w:tcPr/w:shd,
-// plus its w:basedOn parent. Region-specific w:tblStylePr overrides (banded
-// rows/columns, first/last row or column) are out of scope - see design.md.
+// A table style contributes base w:tblPr/w:tblBorders and w:tcPr/w:shd plus
+// conditional w:tblStylePr regions (banded rows/columns, first/last row or
+// column), all merged along w:basedOn. Conditional pPr/rPr inside regions
+// and corner-only types remain out of scope - see design.md.
 type xmlStyles struct {
 	DocDefaults *xmlDocDefaults `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main docDefaults"`
 	Styles      []xmlStyle      `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main style"`
@@ -367,21 +380,62 @@ type xmlRPrDefault struct {
 }
 
 type xmlStyle struct {
-	Type    string    `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main type,attr"`
-	StyleID string    `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main styleId,attr"`
-	BasedOn *xmlVal   `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main basedOn"`
-	TblPr   *xmlTblPr `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblPr"`
-	TcPr    *xmlTcPr  `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tcPr"`
-	PPr     *xmlPPr   `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main pPr"`
-	RPr     *xmlRPr   `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main rPr"`
+	Type         string          `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main type,attr"`
+	StyleID      string          `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main styleId,attr"`
+	BasedOn      *xmlVal         `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main basedOn"`
+	TblPr        *xmlTblPr       `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblPr"`
+	TcPr         *xmlTcPr        `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tcPr"`
+	PPr          *xmlPPr         `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main pPr"`
+	RPr          *xmlRPr         `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main rPr"`
+	TblStylePr   []xmlTblStylePr `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblStylePr"`
+	RowBandSize  *xmlVal         `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblStyleRowBandSize"`
+	ColBandSize  *xmlVal         `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblStyleColBandSize"`
+}
+
+// xmlTblStylePr is one conditional formatting region of a table style.
+type xmlTblStylePr struct {
+	Type  string    `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main type,attr"`
+	TblPr *xmlTblPr `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblPr"`
+	TcPr  *xmlTcPr  `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tcPr"`
+}
+
+// knownTblStylePrTypes are the w:tblStylePr/@w:type values we apply.
+var knownTblStylePrTypes = map[string]bool{
+	"firstRow":  true,
+	"lastRow":   true,
+	"firstCol":  true,
+	"lastCol":   true,
+	"band1Horz": true,
+	"band2Horz": true,
+	"band1Vert": true,
+	"band2Vert": true,
+}
+
+// resolvedTableStyleRegion holds borders/shading from one tblStylePr region.
+type resolvedTableStyleRegion struct {
+	Borders *xmlBorders
+	Shd     *xmlShd
 }
 
 // resolvedTableStyle is a table style's effective border/shading/indent
-// base, after following its w:basedOn chain.
+// base plus conditional regions, after following its w:basedOn chain.
 type resolvedTableStyle struct {
-	Borders *xmlBorders
-	Shd     *xmlShd
-	Ind     *xmlTblInd
+	Borders     *xmlBorders
+	Shd         *xmlShd
+	Ind         *xmlTblInd
+	Regions     map[string]resolvedTableStyleRegion
+	RowBandSize int
+	ColBandSize int
+}
+
+// tblLookFlags are the active conditional-formatting switches for one table.
+type tblLookFlags struct {
+	FirstRow bool
+	LastRow  bool
+	FirstCol bool
+	LastCol  bool
+	NoHBand  bool
+	NoVBand  bool
 }
 
 // buildTableStyles resolves every table style declared in xs (nil-safe: an
@@ -427,17 +481,141 @@ func resolveTableStyle(id string, defs map[string]xmlStyle, cache map[string]res
 	if def.TcPr != nil {
 		own.Shd = def.TcPr.Shd
 	}
+	own.Regions = ownTblStylePrRegions(def.TblStylePr)
+	own.RowBandSize = parseBandSize(def.RowBandSize)
+	own.ColBandSize = parseBandSize(def.ColBandSize)
+
 	var parent resolvedTableStyle
 	if def.BasedOn != nil && def.BasedOn.Val != "" {
 		parent = resolveTableStyle(def.BasedOn.Val, defs, cache, visiting)
 	}
 	merged := resolvedTableStyle{
-		Borders: mergeBorders(own.Borders, parent.Borders),
-		Shd:     coalesceShd(own.Shd, parent.Shd),
-		Ind:     coalesceTblInd(own.Ind, parent.Ind),
+		Borders:     mergeBorders(own.Borders, parent.Borders),
+		Shd:         coalesceShd(own.Shd, parent.Shd),
+		Ind:         coalesceTblInd(own.Ind, parent.Ind),
+		Regions:     mergeTblStylePrRegions(own.Regions, parent.Regions),
+		RowBandSize: coalesceBandSize(own.RowBandSize, parent.RowBandSize),
+		ColBandSize: coalesceBandSize(own.ColBandSize, parent.ColBandSize),
 	}
 	cache[id] = merged
 	return merged
+}
+
+func parseBandSize(v *xmlVal) int {
+	if v == nil {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v.Val))
+	if err != nil || n < 1 {
+		return 0
+	}
+	return n
+}
+
+func coalesceBandSize(own, parent int) int {
+	if own > 0 {
+		return own
+	}
+	if parent > 0 {
+		return parent
+	}
+	return 1
+}
+
+func ownTblStylePrRegions(prs []xmlTblStylePr) map[string]resolvedTableStyleRegion {
+	if len(prs) == 0 {
+		return nil
+	}
+	out := make(map[string]resolvedTableStyleRegion)
+	for _, pr := range prs {
+		typ := strings.TrimSpace(pr.Type)
+		if !knownTblStylePrTypes[typ] {
+			continue
+		}
+		var r resolvedTableStyleRegion
+		if pr.TcPr != nil {
+			r.Borders = pr.TcPr.Borders
+			r.Shd = pr.TcPr.Shd
+		}
+		if pr.TblPr != nil && pr.TblPr.Borders != nil {
+			r.Borders = mergeBorders(r.Borders, pr.TblPr.Borders)
+		}
+		out[typ] = r
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func mergeTblStylePrRegions(own, parent map[string]resolvedTableStyleRegion) map[string]resolvedTableStyleRegion {
+	if len(own) == 0 && len(parent) == 0 {
+		return nil
+	}
+	out := make(map[string]resolvedTableStyleRegion)
+	for k, v := range parent {
+		out[k] = v
+	}
+	for k, o := range own {
+		p := out[k]
+		out[k] = resolvedTableStyleRegion{
+			Borders: mergeBorders(o.Borders, p.Borders),
+			Shd:     coalesceShd(o.Shd, p.Shd),
+		}
+	}
+	return out
+}
+
+// parseTblLook turns w:tblLook into flags. When look is nil, defaults match
+// Word's common styled-table look: first/last row and first column on, last
+// column off, horizontal banding on, vertical banding off.
+func parseTblLook(look *xmlTblLook) tblLookFlags {
+	if look == nil {
+		return tblLookFlags{
+			FirstRow: true,
+			LastRow:  true,
+			FirstCol: true,
+			LastCol:  false,
+			NoHBand:  false,
+			NoVBand:  true,
+		}
+	}
+	f := tblLookFlags{
+		FirstRow: tblLookAttr(look.FirstRow, look.Val, 0x0020),
+		LastRow:  tblLookAttr(look.LastRow, look.Val, 0x0040),
+		FirstCol: tblLookAttr(look.FirstColumn, look.Val, 0x0080),
+		LastCol:  tblLookAttr(look.LastColumn, look.Val, 0x0100),
+		NoHBand:  tblLookAttr(look.NoHBand, look.Val, 0x0200),
+		NoVBand:  tblLookAttr(look.NoVBand, look.Val, 0x0400),
+	}
+	// If no modern attrs and no usable val, fall back to defaults.
+	if look.FirstRow == "" && look.LastRow == "" && look.FirstColumn == "" &&
+		look.LastColumn == "" && look.NoHBand == "" && look.NoVBand == "" &&
+		strings.TrimSpace(look.Val) == "" {
+		return parseTblLook(nil)
+	}
+	return f
+}
+
+func tblLookAttr(attr, valHex string, bit uint16) bool {
+	if attr != "" {
+		switch strings.ToLower(strings.TrimSpace(attr)) {
+		case "1", "true", "on":
+			return true
+		case "0", "false", "off":
+			return false
+		}
+	}
+	v := strings.TrimSpace(valHex)
+	if v == "" {
+		return false
+	}
+	v = strings.TrimPrefix(strings.ToLower(v), "0x")
+	n, err := strconv.ParseUint(v, 16, 16)
+	if err != nil {
+		return false
+	}
+	return uint16(n)&bit != 0
 }
 
 // mergeBorders combines two xmlBorders per side, own winning; a nil result
@@ -1062,30 +1240,55 @@ func firstNonEmpty(vals ...string) string {
 
 // buildTable converts a parsed <w:tbl> into the public Table model, resolving
 // column widths and (per cell) merge/border/shading state. tableStyles is
-// consulted when the table references a w:tblStyle, its resolved border
-// falling under the table's own inline w:tblBorders (inline wins per side).
+// consulted when the table references a w:tblStyle; base and conditional
+// region borders/shading fall under the table's own inline w:tblBorders
+// (inline wins per side).
 func buildTable(xt xmlTable, sc styleContext) Table {
-	var tblBorders *xmlBorders
-	var styleShd *xmlShd
+	var inlineBorders *xmlBorders
+	var style resolvedTableStyle
+	var haveStyle bool
 	var tblInd *xmlTblInd
+	var look *xmlTblLook
 	if xt.Props != nil {
-		tblBorders = xt.Props.Borders
+		inlineBorders = xt.Props.Borders
 		tblInd = xt.Props.Ind
+		look = xt.Props.Look
 		if xt.Props.StyleID != nil {
 			if rs, ok := sc.tables[xt.Props.StyleID.Val]; ok {
-				tblBorders = mergeBorders(tblBorders, rs.Borders)
-				styleShd = rs.Shd
+				style = rs
+				haveStyle = true
 				if tblInd == nil {
 					tblInd = rs.Ind
 				}
 			}
 		}
 	}
-	rows := make([]Row, 0, len(xt.Rows))
-	for _, xr := range xt.Rows {
-		rows = append(rows, buildRow(xr, tblBorders, styleShd, sc))
+	flags := parseTblLook(look)
+	nRows := len(xt.Rows)
+	nCols := tableGridColCount(xt)
+
+	rows := make([]Row, 0, nRows)
+	for ri, xr := range xt.Rows {
+		rows = append(rows, buildRow(xr, inlineBorders, style, haveStyle, flags, ri, nRows, nCols, sc))
 	}
 	return Table{Rows: rows, ColumnWidths: resolveColumnWidths(xt), IndentPt: tblIndPt(tblInd)}
+}
+
+func tableGridColCount(xt xmlTable) int {
+	if xt.Grid != nil && len(xt.Grid.Cols) > 0 {
+		return len(xt.Grid.Cols)
+	}
+	max := 0
+	for _, xr := range xt.Rows {
+		n := 0
+		for _, xc := range xr.Cells {
+			n += gridSpan(xc.Props)
+		}
+		if n > max {
+			max = n
+		}
+	}
+	return max
 }
 
 func tblIndPt(ind *xmlTblInd) float64 {
@@ -1095,15 +1298,23 @@ func tblIndPt(ind *xmlTblInd) float64 {
 	return dxaToPt(ind.W)
 }
 
-func buildRow(xr xmlRow, tblBorders *xmlBorders, styleShd *xmlShd, sc styleContext) Row {
+func buildRow(xr xmlRow, inlineBorders *xmlBorders, style resolvedTableStyle, haveStyle bool, flags tblLookFlags, rowIdx, nRows, nCols int, sc styleContext) Row {
 	cells := make([]Cell, 0, len(xr.Cells))
+	colStart := 0
 	for _, xc := range xr.Cells {
-		cells = append(cells, buildCell(xc, tblBorders, styleShd, sc))
+		cells = append(cells, buildCell(xc, inlineBorders, style, haveStyle, flags, rowIdx, colStart, nRows, nCols, sc))
+		colStart += gridSpan(xc.Props)
 	}
 	return Row{Cells: cells}
 }
 
-func buildCell(xc xmlCell, tblBorders *xmlBorders, styleShd *xmlShd, sc styleContext) Cell {
+func buildCell(xc xmlCell, inlineBorders *xmlBorders, style resolvedTableStyle, haveStyle bool, flags tblLookFlags, rowIdx, colStart, nRows, nCols int, sc styleContext) Cell {
+	var styleBorders *xmlBorders
+	var styleShd *xmlShd
+	if haveStyle {
+		styleBorders, styleShd = styleContributionForCell(style, flags, rowIdx, colStart, nRows, nCols)
+	}
+	tblBorders := mergeBorders(inlineBorders, styleBorders)
 	cell := Cell{
 		Paragraphs: buildParagraphSlice(xc.Paragraphs, sc),
 		ColSpan:    gridSpan(xc.Props),
@@ -1116,6 +1327,88 @@ func buildCell(xc xmlCell, tblBorders *xmlBorders, styleShd *xmlShd, sc styleCon
 		cell.Nested = &nested
 	}
 	return cell
+}
+
+// styleContributionForCell layers base + conditional regions for one cell.
+// Priority (low→high): base → h-band → v-band → first/last col → first/last row.
+func styleContributionForCell(style resolvedTableStyle, flags tblLookFlags, rowIdx, colStart, nRows, nCols int) (*xmlBorders, *xmlShd) {
+	borders := style.Borders
+	shd := style.Shd
+
+	apply := func(typ string) {
+		r, ok := style.Regions[typ]
+		if !ok {
+			return
+		}
+		borders = mergeBorders(r.Borders, borders)
+		shd = coalesceShd(r.Shd, shd)
+	}
+
+	if !flags.NoHBand {
+		if band := horzBandType(rowIdx, nRows, flags, style.RowBandSize); band != "" {
+			apply(band)
+		}
+	}
+	if !flags.NoVBand {
+		if band := vertBandType(colStart, nCols, flags, style.ColBandSize); band != "" {
+			apply(band)
+		}
+	}
+	if flags.FirstCol && colStart == 0 {
+		apply("firstCol")
+	}
+	if flags.LastCol && nCols > 0 && colStart == nCols-1 {
+		apply("lastCol")
+	}
+	if flags.FirstRow && rowIdx == 0 {
+		apply("firstRow")
+	}
+	if flags.LastRow && nRows > 0 && rowIdx == nRows-1 {
+		apply("lastRow")
+	}
+	return borders, shd
+}
+
+func horzBandType(rowIdx, nRows int, flags tblLookFlags, bandSize int) string {
+	bodyStart, bodyEnd := 0, nRows
+	if flags.FirstRow {
+		bodyStart = 1
+	}
+	if flags.LastRow {
+		bodyEnd = nRows - 1
+	}
+	if rowIdx < bodyStart || rowIdx >= bodyEnd {
+		return ""
+	}
+	if bandSize < 1 {
+		bandSize = 1
+	}
+	band := ((rowIdx - bodyStart) / bandSize) % 2
+	if band == 0 {
+		return "band1Horz"
+	}
+	return "band2Horz"
+}
+
+func vertBandType(colStart, nCols int, flags tblLookFlags, bandSize int) string {
+	bodyStart, bodyEnd := 0, nCols
+	if flags.FirstCol {
+		bodyStart = 1
+	}
+	if flags.LastCol {
+		bodyEnd = nCols - 1
+	}
+	if colStart < bodyStart || colStart >= bodyEnd {
+		return ""
+	}
+	if bandSize < 1 {
+		bandSize = 1
+	}
+	band := ((colStart - bodyStart) / bandSize) % 2
+	if band == 0 {
+		return "band1Vert"
+	}
+	return "band2Vert"
 }
 
 func gridSpan(tcPr *xmlTcPr) int {

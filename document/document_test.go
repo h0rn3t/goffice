@@ -573,6 +573,157 @@ func TestTable_NoIndentIsZero(t *testing.T) {
 	}
 }
 
+// bandedStyle is a table style with firstRow borders, band1Horz/band2Horz
+// shading, and firstCol shading — used by tblStylePr tests.
+const bandedStyle = `<w:style w:type="table" w:styleId="Banded">` +
+	`<w:tblPr><w:tblBorders><w:top w:val="single" w:sz="4" w:color="auto"/></w:tblBorders></w:tblPr>` +
+	`<w:tblStylePr w:type="firstRow"><w:tcPr>` +
+	`<w:tcBorders><w:bottom w:val="double" w:sz="16" w:color="0000FF"/></w:tcBorders>` +
+	`<w:shd w:fill="4472C4"/></w:tcPr></w:tblStylePr>` +
+	`<w:tblStylePr w:type="band1Horz"><w:tcPr><w:shd w:fill="D6DCE4"/></w:tcPr></w:tblStylePr>` +
+	`<w:tblStylePr w:type="band2Horz"><w:tcPr><w:shd w:fill="FFFFFF"/></w:tcPr></w:tblStylePr>` +
+	`<w:tblStylePr w:type="firstCol"><w:tcPr><w:shd w:fill="70AD47"/></w:tcPr></w:tblStylePr>` +
+	`</w:style>`
+
+func threeByTwoTable(tblLook string) string {
+	look := ""
+	if tblLook != "" {
+		look = `<w:tblLook ` + tblLook + `/>`
+	}
+	row := func() string {
+		return `<w:tr><w:tc><w:p/></w:tc><w:tc><w:p/></w:tc></w:tr>`
+	}
+	return `<w:tbl><w:tblPr><w:tblStyle w:val="Banded"/>` + look + `</w:tblPr>` +
+		row() + row() + row() + `</w:tbl>`
+}
+
+func TestTable_BandedRowShading(t *testing.T) {
+	// firstRow on → row 0 is header; body rows 1,2 alternate band1/band2.
+	body := threeByTwoTable(`w:firstRow="1" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="0" w:noVBand="1"`)
+	doc := mustOpenWithStyles(t, body, bandedStyle)
+	tbl := singleTable(t, doc)
+
+	if got, want := tbl.Rows[1].Cells[0].Shading, "#D6DCE4"; got != want {
+		t.Fatalf("row1 band1Horz shading = %q, want %q", got, want)
+	}
+	if got, want := tbl.Rows[2].Cells[0].Shading, "#FFFFFF"; got != want {
+		t.Fatalf("row2 band2Horz shading = %q, want %q", got, want)
+	}
+}
+
+func TestTable_FirstRowBordersAndShading(t *testing.T) {
+	body := threeByTwoTable(`w:firstRow="1" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"`)
+	doc := mustOpenWithStyles(t, body, bandedStyle)
+	cell := singleTable(t, doc).Rows[0].Cells[0]
+
+	if got, want := cell.Shading, "#4472C4"; got != want {
+		t.Fatalf("firstRow shading = %q, want %q", got, want)
+	}
+	b := cell.Borders.Bottom
+	if b.Style != "double" || b.WidthPt != 2 || b.Color != "#0000FF" {
+		t.Fatalf("firstRow bottom border = %+v, want {double 2 #0000FF}", b)
+	}
+}
+
+func TestTable_StylePrResolvesThroughBasedOn(t *testing.T) {
+	body := threeByTwoTable(`w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="0" w:noVBand="1"`)
+	styles := `<w:style w:type="table" w:styleId="Banded"><w:basedOn w:val="Parent"/></w:style>` +
+		`<w:style w:type="table" w:styleId="Parent">` +
+		`<w:tblStylePr w:type="band1Horz"><w:tcPr><w:shd w:fill="AABBCC"/></w:tcPr></w:tblStylePr>` +
+		`</w:style>`
+	doc := mustOpenWithStyles(t, body, styles)
+
+	if got, want := singleTable(t, doc).Rows[0].Cells[0].Shading, "#AABBCC"; got != want {
+		t.Fatalf("band1Horz via basedOn = %q, want %q", got, want)
+	}
+}
+
+func TestTable_NoHBandDisablesRowBanding(t *testing.T) {
+	body := threeByTwoTable(`w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"`)
+	doc := mustOpenWithStyles(t, body, bandedStyle)
+
+	if got := singleTable(t, doc).Rows[0].Cells[0].Shading; got != "" {
+		t.Fatalf("shading = %q, want empty when noHBand and no firstRow", got)
+	}
+}
+
+func TestTable_FirstRowFlagOffSkipsFirstRowRegion(t *testing.T) {
+	body := threeByTwoTable(`w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"`)
+	doc := mustOpenWithStyles(t, body, bandedStyle)
+
+	if got := singleTable(t, doc).Rows[0].Cells[0].Shading; got != "" {
+		t.Fatalf("first row shading = %q, want empty when firstRow look is off", got)
+	}
+}
+
+func TestTable_AbsentTblLookUsesDefaults(t *testing.T) {
+	// Defaults: firstRow/lastRow/firstCol on, lastCol off, h-band on, v-band off.
+	body := threeByTwoTable("")
+	doc := mustOpenWithStyles(t, body, bandedStyle)
+	tbl := singleTable(t, doc)
+
+	if got, want := tbl.Rows[0].Cells[1].Shading, "#4472C4"; got != want {
+		t.Fatalf("firstRow (non-firstCol) shading = %q, want %q", got, want)
+	}
+	// firstCol wins over band on body rows for col 0.
+	if got, want := tbl.Rows[1].Cells[0].Shading, "#70AD47"; got != want {
+		t.Fatalf("firstCol shading = %q, want %q", got, want)
+	}
+	if got, want := tbl.Rows[1].Cells[1].Shading, "#D6DCE4"; got != want {
+		t.Fatalf("body band1Horz shading = %q, want %q", got, want)
+	}
+}
+
+func TestTable_FirstRowWinsOverBand(t *testing.T) {
+	body := threeByTwoTable(`w:firstRow="1" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="0" w:noVBand="1"`)
+	doc := mustOpenWithStyles(t, body, bandedStyle)
+
+	if got, want := singleTable(t, doc).Rows[0].Cells[0].Shading, "#4472C4"; got != want {
+		t.Fatalf("firstRow over band = %q, want %q", got, want)
+	}
+}
+
+func TestTable_InlineShadingWinsOverRegion(t *testing.T) {
+	body := `<w:tbl><w:tblPr><w:tblStyle w:val="Banded"/>` +
+		`<w:tblLook w:firstRow="1" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"/>` +
+		`</w:tblPr>` +
+		`<w:tr><w:tc><w:tcPr><w:shd w:fill="FF0000"/></w:tcPr><w:p/></w:tc></w:tr></w:tbl>`
+	doc := mustOpenWithStyles(t, body, bandedStyle)
+
+	if got, want := singleTable(t, doc).Rows[0].Cells[0].Shading, "#FF0000"; got != want {
+		t.Fatalf("inline shading = %q, want %q (wins over firstRow)", got, want)
+	}
+}
+
+func TestTable_BandSkipsHeaderWhenFirstRowOn(t *testing.T) {
+	body := threeByTwoTable(`w:firstRow="1" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="0" w:noVBand="1"`)
+	doc := mustOpenWithStyles(t, body, bandedStyle)
+	tbl := singleTable(t, doc)
+
+	if got, want := tbl.Rows[0].Cells[0].Shading, "#4472C4"; got != want {
+		t.Fatalf("header = %q, want firstRow %q", got, want)
+	}
+	if got, want := tbl.Rows[1].Cells[0].Shading, "#D6DCE4"; got != want {
+		t.Fatalf("first body row = %q, want band1Horz %q", got, want)
+	}
+	if got, want := tbl.Rows[2].Cells[0].Shading, "#FFFFFF"; got != want {
+		t.Fatalf("second body row = %q, want band2Horz %q", got, want)
+	}
+}
+
+func TestTable_UnknownStylePrTypeIgnored(t *testing.T) {
+	body := threeByTwoTable(`w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="0" w:noVBand="1"`)
+	styles := `<w:style w:type="table" w:styleId="Banded">` +
+		`<w:tblStylePr w:type="nwCell"><w:tcPr><w:shd w:fill="FF00FF"/></w:tcPr></w:tblStylePr>` +
+		`<w:tblStylePr w:type="band1Horz"><w:tcPr><w:shd w:fill="D6DCE4"/></w:tcPr></w:tblStylePr>` +
+		`</w:style>`
+	doc := mustOpenWithStyles(t, body, styles)
+
+	if got, want := singleTable(t, doc).Rows[0].Cells[0].Shading, "#D6DCE4"; got != want {
+		t.Fatalf("shading = %q, want band1Horz %q (nwCell ignored)", got, want)
+	}
+}
+
 func TestLineBreak_BetweenTextSegments(t *testing.T) {
 	body := `<w:p><w:r><w:t>A</w:t><w:br/><w:t>B</w:t></w:r></w:p>`
 	runs := paragraphs(t, mustOpen(t, body))[0].Runs

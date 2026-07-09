@@ -165,6 +165,7 @@ func drawLine(r renderer, ln line, align Alignment, x0, width, y float64, isLast
 			}
 		}
 		r.SetFont(w.props.FontFamily, w.props.Bold, w.props.Italic, w.props.Underline, w.props.SizePt)
+		r.SetTextColor(w.props.Color)
 		r.DrawText(x, baseline, w.text)
 		x += w.width
 	}

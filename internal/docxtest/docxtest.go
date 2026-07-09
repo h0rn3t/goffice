@@ -68,6 +68,52 @@ func BuildWithStyles(t *testing.T, bodyXML, stylesInnerXML string) string {
 	})
 }
 
+// BuildWith writes a valid .docx (the base parts plus word/document.xml from
+// bodyXML) together with any extra parts given - e.g. word/styles.xml,
+// word/theme/theme1.xml, word/numbering.xml. Extras with an empty value are
+// skipped, so a test can inject exactly the optional parts it needs.
+func BuildWith(t *testing.T, bodyXML string, extra map[string]string) string {
+	t.Helper()
+	parts := map[string]string{
+		"[Content_Types].xml": contentTypes,
+		"_rels/.rels":         rootRels,
+		"word/document.xml":   Document(bodyXML),
+	}
+	for name, content := range extra {
+		if content != "" {
+			parts[name] = content
+		}
+	}
+	return writeZip(t, "fixture.docx", parts)
+}
+
+// Styles wraps stylesInnerXML (the inner content of <w:styles>) into a full
+// word/styles.xml part with the WordprocessingML namespace declared.
+func Styles(stylesInnerXML string) string {
+	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+		stylesInnerXML + `</w:styles>`
+}
+
+// Numbering wraps numberingInnerXML (the inner content of <w:numbering>, i.e.
+// its w:abstractNum and w:num children) into a full word/numbering.xml part.
+func Numbering(numberingInnerXML string) string {
+	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+		numberingInnerXML + `</w:numbering>`
+}
+
+// Theme wraps clrSchemeInnerXML (the inner content of <a:clrScheme>, i.e. its
+// dk1/lt1/…/folHlink slots) into a full word/theme/theme1.xml DrawingML part.
+func Theme(clrSchemeInnerXML string) string {
+	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Test">
+  <a:themeElements>
+    <a:clrScheme name="Test">` + clrSchemeInnerXML + `</a:clrScheme>
+  </a:themeElements>
+</a:theme>`
+}
+
 // Corrupt writes a file that is not a ZIP archive and returns its path.
 func Corrupt(t *testing.T) string {
 	t.Helper()

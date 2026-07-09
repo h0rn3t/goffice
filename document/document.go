@@ -40,6 +40,10 @@ type RunProperties struct {
 	Underline  bool
 	FontFamily string
 	SizePt     float64
+	// Color is the run's resolved text color as "#RRGGBB", or "" when
+	// undeclared, "auto", or an unresolved theme reference - the renderer draws
+	// "" as the backend default (black).
+	Color string
 }
 
 // Run is a span of text sharing one set of character-formatting properties, or
@@ -213,13 +217,17 @@ func Open(path string) (*Document, error) {
 	}
 	defer func() { _ = r.Close() }()
 
-	var main, styles *zip.File
+	var main, styles, theme, numbering *zip.File
 	for _, f := range r.File {
 		switch f.Name {
 		case "word/document.xml":
 			main = f
 		case "word/styles.xml":
 			styles = f
+		case "word/theme/theme1.xml":
+			theme = f
+		case "word/numbering.xml":
+			numbering = f
 		}
 	}
 	if main == nil {
@@ -241,9 +249,17 @@ func Open(path string) (*Document, error) {
 	sc := styleContext{
 		tables:     buildTableStyles(xs),
 		paragraphs: buildParaStyles(xs),
+		chars:      buildCharStyles(xs),
+		theme:      buildThemeMap(readTheme(theme)),
+		numbering:  newNumberingState(buildNumbering(readNumbering(numbering))),
 	}
-	if xs != nil && xs.DocDefaults != nil && xs.DocDefaults.PPrDefault != nil && xs.DocDefaults.PPrDefault.PPr != nil {
-		sc.defaultSpacing = xs.DocDefaults.PPrDefault.PPr.Spacing
+	if xs != nil && xs.DocDefaults != nil {
+		if xs.DocDefaults.PPrDefault != nil {
+			sc.defaultPPr = xs.DocDefaults.PPrDefault.PPr
+		}
+		if xs.DocDefaults.RPrDefault != nil {
+			sc.defaultRPr = xs.DocDefaults.RPrDefault.RPr
+		}
 	}
 
 	return &Document{
@@ -271,6 +287,46 @@ func readStyles(f *zip.File) *xmlStyles {
 		return nil
 	}
 	return &xs
+}
+
+// readTheme decodes word/theme/theme1.xml when present. Like readStyles it is
+// an optional part: absent, unreadable, or malformed theme1.xml degrades to
+// nil (an empty theme map, so theme-referencing colors resolve to "").
+func readTheme(f *zip.File) *xmlTheme {
+	if f == nil {
+		return nil
+	}
+	rc, err := f.Open()
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = rc.Close() }()
+
+	var t xmlTheme
+	if xml.NewDecoder(rc).Decode(&t) != nil {
+		return nil
+	}
+	return &t
+}
+
+// readNumbering decodes word/numbering.xml when present. Optional part: absent,
+// unreadable, or malformed numbering.xml degrades to nil (no lists, so list
+// paragraphs render without markers).
+func readNumbering(f *zip.File) *xmlNumbering {
+	if f == nil {
+		return nil
+	}
+	rc, err := f.Open()
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = rc.Close() }()
+
+	var xn xmlNumbering
+	if xml.NewDecoder(rc).Decode(&xn) != nil {
+		return nil
+	}
+	return &xn
 }
 
 // Close releases resources held since Open. Because Open reads eagerly and

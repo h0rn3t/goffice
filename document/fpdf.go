@@ -66,6 +66,16 @@ func (r *fpdfRenderer) SetFont(family string, bold, italic, underline bool, size
 	r.pdf.SetFont(mapFontFamily(family), style.String(), sizePt)
 }
 
+// SetTextColor sets the text fill color from a "#RRGGBB" string; an empty or
+// malformed value falls back to black so undeclared/"auto" runs draw normally.
+func (r *fpdfRenderer) SetTextColor(colorHex string) {
+	cr, cg, cb, ok := parseHexColor(colorHex)
+	if !ok {
+		cr, cg, cb = 0, 0, 0
+	}
+	r.pdf.SetTextColor(cr, cg, cb)
+}
+
 func (r *fpdfRenderer) TextWidth(s string) float64 { return r.pdf.GetStringWidth(s) }
 func (r *fpdfRenderer) AddPage()                   { r.pdf.AddPage() }
 func (r *fpdfRenderer) DrawText(x, y float64, s string) {

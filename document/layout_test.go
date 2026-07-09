@@ -22,17 +22,19 @@ type fakeRenderer struct {
 	page    int
 	bold    bool
 	size    float64
+	color   string
 	draws   []drawCall
 	fills   []fillCall
 	strokes []strokeCall
 }
 
 type drawCall struct {
-	page int
-	x, y float64
-	text string
-	size float64
-	bold bool
+	page  int
+	x, y  float64
+	text  string
+	size  float64
+	bold  bool
+	color string
 }
 
 type fillCall struct {
@@ -50,12 +52,13 @@ type strokeCall struct {
 func (f *fakeRenderer) SetFont(_ string, bold, _, _ bool, sizePt float64) {
 	f.bold, f.size = bold, sizePt
 }
+func (f *fakeRenderer) SetTextColor(colorHex string) { f.color = colorHex }
 func (f *fakeRenderer) TextWidth(s string) float64 {
 	return float64(len([]rune(s))) * f.size * 0.5
 }
 func (f *fakeRenderer) AddPage() { f.page++ }
 func (f *fakeRenderer) DrawText(x, y float64, s string) {
-	f.draws = append(f.draws, drawCall{page: f.page, x: x, y: y, text: s, size: f.size, bold: f.bold})
+	f.draws = append(f.draws, drawCall{page: f.page, x: x, y: y, text: s, size: f.size, bold: f.bold, color: f.color})
 }
 func (f *fakeRenderer) FillRect(x, y, w, h float64, colorHex string) {
 	f.fills = append(f.fills, fillCall{page: f.page, x: x, y: y, w: w, h: h, color: colorHex})

@@ -42,6 +42,9 @@ func pageFrom(g PageGeometry) page {
 type renderer interface {
 	// SetFont selects the active font for subsequent TextWidth/DrawText calls.
 	SetFont(family string, bold, italic, underline bool, sizePt float64)
+	// SetTextColor sets the fill color for subsequent DrawText calls from a
+	// "#RRGGBB" string; an empty or malformed value selects black.
+	SetTextColor(colorHex string)
 	// TextWidth measures s in the active font, in points.
 	TextWidth(s string) float64
 	// AddPage starts a new page and makes it current.

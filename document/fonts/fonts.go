@@ -7,10 +7,11 @@
 //     Roman/Courier New, the legacy Word core fonts.
 //   - Carlito - metric-compatible with Calibri, Word's default body font
 //     (minorHAnsi) since Office 2007.
-//   - Caladea - metric-compatible with Cambria, Word's default heading font
-//     (majorHAnsi) since Office 2007.
 //
-// Each family carries Regular/Bold/Italic/BoldItalic variants.
+// Each family carries Regular/Bold/Italic/BoldItalic variants and covers
+// Cyrillic (see fonts_test.go) - the reason Cambria is not paired with its
+// metric clone Caladea, which is Latin/Greek-only and would render Cyrillic as
+// blank .notdef boxes; Cambria maps to Liberation Serif instead.
 package fonts
 
 import _ "embed"
@@ -63,30 +64,17 @@ var carlitoItalic []byte
 //go:embed Carlito-BoldItalic.ttf
 var carlitoBoldItalic []byte
 
-//go:embed Caladea-Regular.ttf
-var caladeaRegular []byte
-
-//go:embed Caladea-Bold.ttf
-var caladeaBold []byte
-
-//go:embed Caladea-Italic.ttf
-var caladeaItalic []byte
-
-//go:embed Caladea-BoldItalic.ttf
-var caladeaBoldItalic []byte
-
-// Sans, Serif, Mono, Carlito, and Caladea are the embedded font family names,
-// matching the names AddUTF8FontFromBytes is registered under.
+// Sans, Serif, Mono, and Carlito are the embedded font family names, matching
+// the names AddUTF8FontFromBytes is registered under.
 const (
 	Sans    = "Liberation Sans"
 	Serif   = "Liberation Serif"
 	Mono    = "Liberation Mono"
 	Carlito = "Carlito" // metric-compatible with Calibri
-	Caladea = "Caladea" // metric-compatible with Cambria
 )
 
 // Families lists every embedded font family name.
-var Families = []string{Sans, Serif, Mono, Carlito, Caladea}
+var Families = []string{Sans, Serif, Mono, Carlito}
 
 // Bytes returns the embedded TTF bytes for family's bold/italic variant.
 // It panics if family is not one of Sans, Serif, or Mono.
@@ -100,8 +88,6 @@ func Bytes(family string, bold, italic bool) []byte {
 		return pick(monoRegular, monoBold, monoItalic, monoBoldItalic, bold, italic)
 	case Carlito:
 		return pick(carlitoRegular, carlitoBold, carlitoItalic, carlitoBoldItalic, bold, italic)
-	case Caladea:
-		return pick(caladeaRegular, caladeaBold, caladeaItalic, caladeaBoldItalic, bold, italic)
 	default:
 		panic("docx2pdf: unknown embedded font family " + family)
 	}

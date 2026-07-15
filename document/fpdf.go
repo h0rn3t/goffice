@@ -166,21 +166,20 @@ func parseHexColor(hex string) (r, g, b int, ok bool) {
 	return int(v >> 16 & 0xFF), int(v >> 8 & 0xFF), int(v & 0xFF), true
 }
 
-// mapFontFamily maps a Word font name to one of the embedded families, each
-// metric-compatible with the Word font it stands in for so line breaks stay
-// close to Word's own and Unicode (incl. Cyrillic) renders instead of mojibake:
-// Calibri → Carlito, Cambria → Caladea, other serif → Liberation Serif,
-// monospace → Liberation Mono, else Liberation Sans. The Calibri/Cambria cases
-// come first because they are also serif/sans by shape and would otherwise fall
-// into the generic Liberation branches.
+// mapFontFamily maps a Word font name to one of the embedded families, chosen
+// to keep line breaks close to Word's while still rendering Unicode (incl.
+// Cyrillic) instead of mojibake: Calibri → Carlito (metric-compatible and
+// Cyrillic-covering), other serif (incl. Cambria) → Liberation Serif, monospace
+// → Liberation Mono, else Liberation Sans. Cambria's own metric clone Caladea is
+// deliberately not used: it lacks Cyrillic glyphs, so it would render Cyrillic
+// text as blank boxes. The Calibri case comes first because Carlito is sans by
+// shape and would otherwise fall into the default Liberation Sans branch.
 func mapFontFamily(name string) string {
 	n := strings.ToLower(name)
 	switch {
 	case strings.Contains(n, "calibri"):
 		return fonts.Carlito
-	case strings.Contains(n, "cambria"):
-		return fonts.Caladea
-	case containsAny(n, "times", "serif", "georgia", "garamond", "roman", "minion", "book",
+	case containsAny(n, "times", "serif", "georgia", "garamond", "roman", "cambria", "minion", "book",
 		"constantia", "palatino", "baskerville", "didot", "playfair", "merriweather", "cardo",
 		"goudy", "caslon", "bodoni", "rockwell", "perpetua"):
 		return fonts.Serif

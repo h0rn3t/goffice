@@ -81,7 +81,19 @@ type Run struct {
 	// hanging indent this way, putting the paragraph's text at the tab stop
 	// Word aligns it to. Zero for an ordinary run.
 	MinWidthPt float64
+	// Field, when set, marks this run as a computed field the renderer fills in
+	// at draw time: FieldPage → the page's own number, FieldNumPages → the total
+	// page count. Text holds the value cached in the .docx, used as-is until the
+	// renderer overwrites it. "" for an ordinary run.
+	Field string
 }
+
+// Field kinds a Run may carry (see Run.Field). Only page-number fields are
+// computed; every other Word field renders its cached result text verbatim.
+const (
+	FieldPage     = "PAGE"
+	FieldNumPages = "NUMPAGES"
+)
 
 // ParagraphProperties is the paragraph-level formatting needed for layout.
 type ParagraphProperties struct {

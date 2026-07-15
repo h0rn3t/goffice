@@ -43,6 +43,7 @@ func newFPDFRenderer(widthPt, heightPt float64) *fpdfRenderer {
 		Size:    fpdf.SizeType{Wd: widthPt, Ht: heightPt},
 	})
 	pdf.SetAutoPageBreak(false, 0) // pagination is handled by the layout
+	pdf.AliasNbPages(nbPagesAlias) // NUMPAGES fields draw the alias; fpdf fills the count
 	for _, family := range fonts.Families {
 		for _, s := range utf8Styles {
 			pdf.AddUTF8FontFromBytes(family, s.str, fonts.Bytes(family, s.bold, s.italic))

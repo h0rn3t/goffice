@@ -113,9 +113,75 @@ type xmlPgMar struct {
 	Footer string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main footer,attr"`
 }
 
+// xmlParagraph decodes <w:p> via a custom UnmarshalXML so that runs (<w:r>),
+// hyperlinks (<w:hyperlink>) and simple fields (<w:fldSimple>) keep their
+// document order in Items: a hyperlink or field sits mid-paragraph, so ordering
+// its wrapped runs among the ordinary ones matters for the text to read right.
 type xmlParagraph struct {
-	Props *xmlPPr  `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main pPr"`
-	Runs  []xmlRun `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main r"`
+	Props *xmlPPr
+	Items []xmlParaChild
+}
+
+// xmlParaChild is one ordered child of a paragraph: exactly one field is non-nil.
+type xmlParaChild struct {
+	Run       *xmlRun
+	Hyperlink *xmlHyperlink
+	FldSimple *xmlFldSimple
+}
+
+func (xp *xmlParagraph) UnmarshalXML(d *xml.Decoder, _ xml.StartElement) error {
+	for {
+		tok, err := d.Token()
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+		start, ok := tok.(xml.StartElement)
+		if !ok {
+			if _, end := tok.(xml.EndElement); end {
+				return nil
+			}
+			continue
+		}
+		if start.Name.Space != wordNS {
+			if err := d.Skip(); err != nil {
+				return err
+			}
+			continue
+		}
+		switch start.Name.Local {
+		case "pPr":
+			var pr xmlPPr
+			if err := d.DecodeElement(&pr, &start); err != nil {
+				return err
+			}
+			xp.Props = &pr
+		case "r":
+			var r xmlRun
+			if err := d.DecodeElement(&r, &start); err != nil {
+				return err
+			}
+			xp.Items = append(xp.Items, xmlParaChild{Run: &r})
+		case "hyperlink":
+			var h xmlHyperlink
+			if err := d.DecodeElement(&h, &start); err != nil {
+				return err
+			}
+			xp.Items = append(xp.Items, xmlParaChild{Hyperlink: &h})
+		case "fldSimple":
+			var fs xmlFldSimple
+			if err := d.DecodeElement(&fs, &start); err != nil {
+				return err
+			}
+			xp.Items = append(xp.Items, xmlParaChild{FldSimple: &fs})
+		default:
+			if err := d.Skip(); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 type xmlPPr struct {
@@ -173,6 +239,11 @@ type xmlRunContent struct {
 	Break   *xmlBr
 	Drawing *xmlDrawing
 	Pict    *xmlPict
+	// FldChar is a complex-field boundary ("begin"/"separate"/"end"); InstrText
+	// is a fragment of the field code between begin and separate. Together they
+	// carry PAGE/NUMPAGES fields, whose displayed value is computed at render.
+	FldChar   *string
+	InstrText *string
 }
 
 func (r *xmlRun) UnmarshalXML(d *xml.Decoder, _ xml.StartElement) error {
@@ -229,6 +300,20 @@ func (r *xmlRun) UnmarshalXML(d *xml.Decoder, _ xml.StartElement) error {
 				return err
 			}
 			r.Content = append(r.Content, xmlRunContent{Pict: &p})
+		case "fldChar":
+			var fc xmlFldChar
+			if err := d.DecodeElement(&fc, &start); err != nil {
+				return err
+			}
+			t := fc.Type
+			r.Content = append(r.Content, xmlRunContent{FldChar: &t})
+		case "instrText":
+			var txt xmlText
+			if err := d.DecodeElement(&txt, &start); err != nil {
+				return err
+			}
+			s := txt.Value
+			r.Content = append(r.Content, xmlRunContent{InstrText: &s})
 		default:
 			if err := d.Skip(); err != nil {
 				return err
@@ -275,6 +360,26 @@ type xmlText struct {
 
 type xmlBr struct {
 	Type string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main type,attr"`
+}
+
+// xmlFldChar is a complex-field boundary: <w:fldChar w:fldCharType="begin"/>,
+// "separate" or "end".
+type xmlFldChar struct {
+	Type string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main fldCharType,attr"`
+}
+
+// xmlHyperlink is <w:hyperlink>: its wrapped runs (whose text would otherwise be
+// dropped, since they are not direct <w:r> children of the paragraph). The
+// target URL (r:id / w:anchor) is not yet turned into a clickable annotation.
+type xmlHyperlink struct {
+	Runs []xmlRun `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main r"`
+}
+
+// xmlFldSimple is <w:fldSimple w:instr="…">: a self-contained field carrying its
+// code in an attribute and its cached result as wrapped runs.
+type xmlFldSimple struct {
+	Instr string   `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main instr,attr"`
+	Runs  []xmlRun `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main r"`
 }
 
 // xmlVal holds a w:val attribute (jc, sz, u, …).
@@ -1214,33 +1319,124 @@ func buildParagraph(xp xmlParagraph, sc styleContext) Paragraph {
 	if hasStyle {
 		pStyleRPr = ps.RPr
 	}
-	for _, xr := range xp.Runs {
-		props := resolveRunProps(xr.Props, pStyleRPr, sc)
-		for _, c := range xr.Content {
-			switch {
-			case c.Break != nil:
-				switch strings.ToLower(strings.TrimSpace(c.Break.Type)) {
-				case "page":
-					p.Props.PageBreak = true
-				case "column":
-					p.Props.ColumnBreak = true
-				default:
-					p.Runs = append(p.Runs, Run{LineBreak: true})
-				}
-			case c.Drawing != nil:
-				if img := c.Drawing.image(sc.images); img != nil {
-					p.Runs = append(p.Runs, Run{Image: img, Props: props})
-				}
-			case c.Pict != nil:
-				if img := c.Pict.image(sc.images); img != nil {
-					p.Runs = append(p.Runs, Run{Image: img, Props: props})
-				}
-			case c.Text != nil && *c.Text != "":
-				p.Runs = append(p.Runs, Run{Text: *c.Text, Props: props})
+	var fld fieldState
+	for _, item := range xp.Items {
+		switch {
+		case item.Run != nil:
+			appendRun(&p, *item.Run, pStyleRPr, sc, &fld)
+		case item.Hyperlink != nil:
+			// A hyperlink's runs carry the "Hyperlink" character style, so they
+			// pick up its blue/underline through the ordinary rStyle resolution;
+			// surfacing them here is what stops the link text from vanishing.
+			for _, xr := range item.Hyperlink.Runs {
+				appendRun(&p, xr, pStyleRPr, sc, &fld)
 			}
+		case item.FldSimple != nil:
+			appendSimpleField(&p, *item.FldSimple, pStyleRPr, sc)
 		}
 	}
 	return p
+}
+
+// fieldState tracks a complex field (fldChar begin…separate…end) as buildParagraph
+// walks a paragraph's runs. Between begin and separate the field code is
+// collected; once it is known to be PAGE/NUMPAGES a single computed run is
+// emitted and the cached result runs (up to end) are suppressed. Any other field
+// leaves suppress false, so its cached result flows as ordinary text.
+type fieldState struct {
+	active   bool
+	inInstr  bool
+	suppress bool
+	emitted  bool
+	instr    strings.Builder
+}
+
+// appendRun turns one <w:r> into paragraph runs, feeding its content through the
+// field state machine so PAGE/NUMPAGES fields become computed runs.
+func appendRun(p *Paragraph, xr xmlRun, pStyleRPr *xmlRPr, sc styleContext, fld *fieldState) {
+	props := resolveRunProps(xr.Props, pStyleRPr, sc)
+	for _, c := range xr.Content {
+		switch {
+		case c.FldChar != nil:
+			switch strings.ToLower(strings.TrimSpace(*c.FldChar)) {
+			case "begin":
+				*fld = fieldState{active: true, inInstr: true}
+			case "separate":
+				fld.inInstr = false
+				if fld.active && !fld.emitted {
+					if k := classifyField(fld.instr.String()); k != "" {
+						p.Runs = append(p.Runs, Run{Field: k, Props: props})
+						fld.emitted, fld.suppress = true, true
+					}
+				}
+			case "end":
+				if fld.active && !fld.emitted {
+					if k := classifyField(fld.instr.String()); k != "" {
+						p.Runs = append(p.Runs, Run{Field: k, Props: props})
+					}
+				}
+				*fld = fieldState{}
+			}
+		case c.InstrText != nil:
+			if fld.active && fld.inInstr {
+				fld.instr.WriteString(*c.InstrText)
+			}
+		case fld.active && (fld.inInstr || fld.suppress):
+			// Instruction region, or a known field's cached result: draw nothing.
+		case c.Break != nil:
+			switch strings.ToLower(strings.TrimSpace(c.Break.Type)) {
+			case "page":
+				p.Props.PageBreak = true
+			case "column":
+				p.Props.ColumnBreak = true
+			default:
+				p.Runs = append(p.Runs, Run{LineBreak: true})
+			}
+		case c.Drawing != nil:
+			if img := c.Drawing.image(sc.images); img != nil {
+				p.Runs = append(p.Runs, Run{Image: img, Props: props})
+			}
+		case c.Pict != nil:
+			if img := c.Pict.image(sc.images); img != nil {
+				p.Runs = append(p.Runs, Run{Image: img, Props: props})
+			}
+		case c.Text != nil && *c.Text != "":
+			p.Runs = append(p.Runs, Run{Text: *c.Text, Props: props})
+		}
+	}
+}
+
+// appendSimpleField turns a <w:fldSimple> into a computed run for PAGE/NUMPAGES,
+// or - for any other field - surfaces its cached result runs as ordinary text.
+func appendSimpleField(p *Paragraph, fs xmlFldSimple, pStyleRPr *xmlRPr, sc styleContext) {
+	if k := classifyField(fs.Instr); k != "" {
+		props := resolveRunProps(nil, pStyleRPr, sc)
+		if len(fs.Runs) > 0 {
+			props = resolveRunProps(fs.Runs[0].Props, pStyleRPr, sc)
+		}
+		p.Runs = append(p.Runs, Run{Field: k, Props: props})
+		return
+	}
+	var ignored fieldState
+	for _, xr := range fs.Runs {
+		appendRun(p, xr, pStyleRPr, sc, &ignored)
+	}
+}
+
+// classifyField returns FieldPage or FieldNumPages for a field code whose first
+// keyword is PAGE or NUMPAGES (ignoring switches like \* MERGEFORMAT), else "".
+func classifyField(instr string) string {
+	f := strings.Fields(instr)
+	if len(f) == 0 {
+		return ""
+	}
+	switch strings.ToUpper(f[0]) {
+	case FieldPage:
+		return FieldPage
+	case FieldNumPages:
+		return FieldNumPages
+	}
+	return ""
 }
 
 // markerRun turns a resolved list marker into the run that precedes the

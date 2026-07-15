@@ -10,7 +10,43 @@ import (
 	"io"
 	"math"
 	"os"
+	"strconv"
 )
+
+// nbPagesAlias is the placeholder a NUMPAGES field draws; the fpdf backend
+// (AliasNbPages) rewrites it to the final page count when the PDF is closed.
+// The count's width is measured on the placeholder, so a "Page X of Y" line
+// whose Y has a different digit count shifts by a few points - acceptable.
+const nbPagesAlias = "{nb}"
+
+// fillFields returns p with its computed field runs (PAGE/NUMPAGES) resolved to
+// text: the current page number, or the total-pages placeholder. Paragraphs
+// without a field run are returned unchanged; otherwise the runs are copied so
+// the document model itself is not mutated (headers are re-rendered per page).
+func fillFields(p Paragraph, pageNo int) Paragraph {
+	has := false
+	for _, r := range p.Runs {
+		if r.Field != "" {
+			has = true
+			break
+		}
+	}
+	if !has {
+		return p
+	}
+	runs := make([]Run, len(p.Runs))
+	copy(runs, p.Runs)
+	for i := range runs {
+		switch runs[i].Field {
+		case FieldPage:
+			runs[i].Text = strconv.Itoa(pageNo)
+		case FieldNumPages:
+			runs[i].Text = nbPagesAlias
+		}
+	}
+	p.Runs = runs
+	return p
+}
 
 // WritePDF renders the document and writes the PDF to path, in one call:
 //
@@ -122,6 +158,7 @@ type flow struct {
 	y             float64
 	atTop         bool
 	pageInSection int
+	pageNo        int // document-absolute page number, for PAGE fields
 	fixed         bool
 }
 
@@ -135,7 +172,8 @@ func (f *flow) newPage() {
 	}
 	f.r.AddPage(f.sec.sec.Geometry.WidthPt, f.sec.sec.Geometry.HeightPt)
 	f.pageInSection++
-	drawHeaderFooter(f.r, f.sec, f.pageInSection)
+	f.pageNo++
+	drawHeaderFooter(f.r, f.sec, f.pageInSection, f.pageNo)
 	f.col = 0
 	f.y = f.frame().originY
 	f.atTop = true
@@ -240,6 +278,7 @@ func renderParagraph(f *flow, p Paragraph) {
 	}
 	f.y += p.Props.Spacing.BeforePt
 
+	p = fillFields(p, f.pageNo)
 	lines := layoutParagraph(f.r, p, f.frame().contentWidth-p.Props.Indent.LeftPt-p.Props.Indent.RightPt)
 	if len(lines) == 0 { // empty paragraph advances one line at its line spacing
 		h := lineHeightFor(defaultRenderSizePt, 0, p.Props.Spacing)
@@ -278,7 +317,7 @@ func renderParagraph(f *flow, p Paragraph) {
 // just been added. On a title page (w:titlePg) the "first" parts replace the
 // default ones - and when the section declares none, the page simply gets no
 // header/footer, which is exactly what Word draws.
-func drawHeaderFooter(r renderer, sl sectionLayout, pageInSection int) {
+func drawHeaderFooter(r renderer, sl sectionLayout, pageInSection, pageNo int) {
 	s := sl.sec
 	hdr, ftr := s.Header, s.Footer
 	if s.TitlePage && pageInSection == 1 {
@@ -286,22 +325,25 @@ func drawHeaderFooter(r renderer, sl sectionLayout, pageInSection int) {
 	}
 	base := pageFrom(s.Geometry)
 	if len(hdr) > 0 {
-		drawBlock(r, hdr, base.originX, s.HeaderOffsetPt, base.contentWidth)
+		drawBlock(r, hdr, base.originX, s.HeaderOffsetPt, base.contentWidth, pageNo)
 	}
 	if len(ftr) > 0 {
 		// The footer sits above its distance from the bottom edge, so it is
 		// measured first and drawn from there: a two-line footer grows upward,
 		// as in Word, rather than off the page.
 		h := blockHeight(r, ftr, base.contentWidth)
-		drawBlock(r, ftr, base.originX, s.Geometry.HeightPt-s.FooterOffsetPt-h, base.contentWidth)
+		drawBlock(r, ftr, base.originX, s.Geometry.HeightPt-s.FooterOffsetPt-h, base.contentWidth, pageNo)
 	}
 }
 
 // drawBlock draws elements at a fixed origin, with no pagination of its own.
-func drawBlock(r renderer, elems []BodyElement, x, y, width float64) {
+// pageNo is the page these fixed elements sit on, so a PAGE field in a header or
+// footer shows that page's own number.
+func drawBlock(r renderer, elems []BodyElement, x, y, width float64, pageNo int) {
 	f := &flow{
-		r:     r,
-		fixed: true,
+		r:      r,
+		fixed:  true,
+		pageNo: pageNo,
 		sec: sectionLayout{cols: []page{{
 			originX:      x,
 			originY:      y,

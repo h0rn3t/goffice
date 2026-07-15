@@ -229,6 +229,34 @@ func TestLayoutTable_MergedCellGrowsTheRowsItSpans(t *testing.T) {
 	}
 }
 
+func TestLayoutTable_RestartCellDoesNotInflateItsFirstRow(t *testing.T) {
+	// A cell merged down four rows, carrying one paragraph per spanned row (as
+	// Word emits: the text plus trailing empty paragraphs), beside a column of
+	// single-line cells. Every body row must come out the same height - the
+	// merged cell's height belongs to the whole span, not piled onto row 0.
+	restart := Cell{ColSpan: 1, VMerge: VMergeRestart, Paragraphs: []Paragraph{
+		para(AlignLeft, false, run("x", 12)),
+		para(AlignLeft, false, run("", 12)),
+		para(AlignLeft, false, run("", 12)),
+		para(AlignLeft, false, run("", 12)),
+	}}
+	cont := func() Cell { return Cell{ColSpan: 1, VMerge: VMergeContinue} }
+	tbl := Table{ColumnWidths: []float64{100, 100}, Rows: []Row{
+		mkRow(mkCell(1, VMergeNone, para(AlignLeft, false, run("a", 12))), restart),
+		mkRow(mkCell(1, VMergeNone, para(AlignLeft, false, run("b", 12))), cont()),
+		mkRow(mkCell(1, VMergeNone, para(AlignLeft, false, run("c", 12))), cont()),
+		mkRow(mkCell(1, VMergeNone, para(AlignLeft, false, run("d", 12))), cont()),
+	}}
+	tl := layoutTable(&fakeRenderer{}, tbl, contentWidthPt, contentHeightPt)
+
+	h0 := tl.rows[0].height
+	for i, r := range tl.rows {
+		if r.height < h0-0.01 || r.height > h0+0.01 {
+			t.Errorf("row %d height = %.2f, want %.2f (all merged-span rows equal)", i, r.height, h0)
+		}
+	}
+}
+
 func TestLayoutTable_MergedCellCannotGrowAFixedRow(t *testing.T) {
 	tall := Cell{
 		ColSpan: 1, VMerge: VMergeRestart,

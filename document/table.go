@@ -108,8 +108,14 @@ func layoutTable(r renderer, t Table, availWidth, availHeight float64) tableLayo
 			var content cellContent
 			if cell.VMerge != VMergeContinue {
 				content = layoutCellContent(r, cell, margins, width, wrapLen, availHeight)
-				if h := cellHeightNeeded(cell, margins, content); h > rl.height {
-					rl.height = h
+				// A restart cell's content spans every row it merges, so its height is
+				// applied by growMergedRows across the whole span. Piling it onto the
+				// starting row instead would leave the first row tall and the merged
+				// rows below it short (uneven).
+				if cell.VMerge != VMergeRestart {
+					if h := cellHeightNeeded(cell, margins, content); h > rl.height {
+						rl.height = h
+					}
 				}
 			}
 			rl.cells = append(rl.cells, cellLayout{cell: cell, col: col, margins: margins, content: content})

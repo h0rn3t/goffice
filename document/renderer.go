@@ -8,12 +8,9 @@ const (
 	// lineSpacing multiplies a line's tallest font size to get its box height.
 	lineSpacing = 1.2
 
-	// cellPaddingPt is the fixed inner padding applied to every table cell on
-	// every side; per-cell padding customization (w:tcMar) is out of scope.
-	cellPaddingPt = 4.0
 	// minRowHeightPt floors a table row's height so an all-empty or
-	// all-vMerge-continuation row still occupies visible space.
-	minRowHeightPt = defaultRenderSizePt*lineSpacing + 2*cellPaddingPt
+	// all-vMerge-continuation row still occupies visible space: one default line.
+	minRowHeightPt = defaultRenderSizePt * lineSpacing
 )
 
 // page is the per-document layout frame in points, derived from the
@@ -47,16 +44,34 @@ type renderer interface {
 	SetTextColor(colorHex string)
 	// TextWidth measures s in the active font, in points.
 	TextWidth(s string) float64
-	// AddPage starts a new page and makes it current.
-	AddPage()
+	// AddPage starts a new page of the given size and makes it current. Pages
+	// are sized per section, so a document whose sections differ (say a
+	// landscape one) gets pages of different sizes.
+	AddPage(widthPt, heightPt float64)
 	// DrawText draws s with its baseline at (x, y) in the active font.
 	DrawText(x, y float64, s string)
+	// DrawImage draws img in the rectangle with top-left corner (x, y). An
+	// image is embedded once per Image.Name however often it is drawn.
+	DrawImage(x, y, w, h float64, img *Image)
 	// FillRect fills the rectangle with top-left corner (x, y), width w and
 	// height h, in the given "#RRGGBB" color. A no-op for an empty colorHex.
 	FillRect(x, y, w, h float64, colorHex string)
 	// StrokeLine draws a line from (x1, y1) to (x2, y2) with the given width
 	// (points) and "#RRGGBB" color. A no-op for an empty colorHex.
 	StrokeLine(x1, y1, x2, y2, widthPt float64, colorHex string)
+	// Rotate turns the coordinate system deg degrees counter-clockwise about
+	// (x, y) for everything drawn until the matching RotateEnd - which is how a
+	// cell's vertical text (w:textDirection) is drawn with the ordinary
+	// horizontal layout code.
+	Rotate(deg, x, y float64)
+	// RotateEnd undoes the last Rotate.
+	RotateEnd()
+	// Clip confines everything drawn until the matching ClipEnd to the given
+	// rectangle - how a cell of a fixed-height row (w:hRule="exact") keeps its
+	// overflowing content to itself.
+	Clip(x, y, w, h float64)
+	// ClipEnd undoes the last Clip.
+	ClipEnd()
 	// Output writes the finished PDF, returning any accumulated backend error.
 	Output(w io.Writer) error
 }

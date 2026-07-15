@@ -176,7 +176,7 @@ func TestNumbering_SequentialDecimal(t *testing.T) {
 		`<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>c</w:t></w:r></w:p>`
 	doc := mustOpenWith(t, body, map[string]string{"word/numbering.xml": docxtest.Numbering(simpleNumbering)})
 	ps := paragraphs(t, doc)
-	for i, want := range []string{"1. ", "2. ", "3. "} {
+	for i, want := range []string{"1.", "2.", "3."} {
 		if got := markerText(t, ps[i]); got != want {
 			t.Fatalf("paragraph %d marker = %q, want %q", i, got, want)
 		}
@@ -190,7 +190,7 @@ func TestNumbering_NestedLevelReset(t *testing.T) {
 	body := lvl(0) + lvl(1) + lvl(1) + lvl(0) + lvl(1)
 	doc := mustOpenWith(t, body, map[string]string{"word/numbering.xml": docxtest.Numbering(simpleNumbering)})
 	ps := paragraphs(t, doc)
-	for i, want := range []string{"1. ", "1.1. ", "1.2. ", "2. ", "2.1. "} {
+	for i, want := range []string{"1.", "1.1.", "1.2.", "2.", "2.1."} {
 		if got := markerText(t, ps[i]); got != want {
 			t.Fatalf("paragraph %d marker = %q, want %q", i, got, want)
 		}
@@ -202,8 +202,8 @@ func TestNumbering_Bullet(t *testing.T) {
 		<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>`
 	body := `<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>x</w:t></w:r></w:p>`
 	doc := mustOpenWith(t, body, map[string]string{"word/numbering.xml": docxtest.Numbering(num)})
-	if got := markerText(t, paragraphs(t, doc)[0]); got != "• " {
-		t.Fatalf("bullet marker = %q, want %q", got, "• ")
+	if got := markerText(t, paragraphs(t, doc)[0]); got != "•" {
+		t.Fatalf("bullet marker = %q, want %q", got, "•")
 	}
 }
 
@@ -213,7 +213,7 @@ func TestNumbering_LowerLetter(t *testing.T) {
 	item := `<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>x</w:t></w:r></w:p>`
 	doc := mustOpenWith(t, item+item+item, map[string]string{"word/numbering.xml": docxtest.Numbering(num)})
 	ps := paragraphs(t, doc)
-	for i, want := range []string{"a) ", "b) ", "c) "} {
+	for i, want := range []string{"a)", "b)", "c)"} {
 		if got := markerText(t, ps[i]); got != want {
 			t.Fatalf("paragraph %d marker = %q, want %q", i, got, want)
 		}
@@ -236,8 +236,8 @@ func TestNumbering_NumPrFromParagraphStyle(t *testing.T) {
 		"word/styles.xml":    styles,
 		"word/numbering.xml": docxtest.Numbering(simpleNumbering),
 	})
-	if got := markerText(t, paragraphs(t, doc)[0]); got != "1. " {
-		t.Fatalf("marker = %q, want %q (numPr resolved from paragraph style)", got, "1. ")
+	if got := markerText(t, paragraphs(t, doc)[0]); got != "1." {
+		t.Fatalf("marker = %q, want %q (numPr resolved from paragraph style)", got, "1.")
 	}
 }
 
@@ -245,8 +245,8 @@ func TestNumbering_LvlOverrideStart(t *testing.T) {
 	num := simpleNumbering + `<w:num w:numId="2"><w:abstractNumId w:val="0"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="5"/></w:lvlOverride></w:num>`
 	body := `<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="2"/></w:numPr></w:pPr><w:r><w:t>x</w:t></w:r></w:p>`
 	doc := mustOpenWith(t, body, map[string]string{"word/numbering.xml": docxtest.Numbering(num)})
-	if got := markerText(t, paragraphs(t, doc)[0]); got != "5. " {
-		t.Fatalf("marker = %q, want %q (lvlOverride start=5)", got, "5. ")
+	if got := markerText(t, paragraphs(t, doc)[0]); got != "5." {
+		t.Fatalf("marker = %q, want %q (lvlOverride start=5)", got, "5.")
 	}
 }
 

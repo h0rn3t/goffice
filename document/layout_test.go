@@ -10,22 +10,41 @@ import (
 // document resolves to when it declares no w:sectPr. Derived from the single
 // source (DefaultPageGeometry) so it can't drift.
 var (
-	testGeometry   = DefaultPageGeometry()
-	testPage       = pageFrom(testGeometry)
-	marginPt       = testGeometry.MarginTopPt
-	contentWidthPt = testGeometry.WidthPt - testGeometry.MarginLeftPt - testGeometry.MarginRightPt
+	testGeometry    = DefaultPageGeometry()
+	testPage        = pageFrom(testGeometry)
+	marginPt        = testGeometry.MarginTopPt
+	contentWidthPt  = testGeometry.WidthPt - testGeometry.MarginLeftPt - testGeometry.MarginRightPt
+	contentHeightPt = testPage.bottomLimit - testPage.originY
 )
 
 // fakeRenderer is a deterministic renderer: every glyph is half the point size
 // wide, so wrapping and pagination are exactly predictable in tests.
 type fakeRenderer struct {
-	page    int
-	bold    bool
-	size    float64
-	color   string
-	draws   []drawCall
-	fills   []fillCall
-	strokes []strokeCall
+	page      int
+	bold      bool
+	size      float64
+	color     string
+	draws     []drawCall
+	fills     []fillCall
+	strokes   []strokeCall
+	images    []imageCall
+	pages     []pageCall
+	rotations []rotateCall
+	clips     []clipCall
+}
+
+// rotateCall is one Rotate/RotateEnd block: the transform and the range of
+// draws (draws[from:to]) made under it.
+type rotateCall struct {
+	deg, x, y float64
+	from, to  int
+}
+
+// clipCall is one Clip/ClipEnd block: the rectangle and the range of draws
+// (draws[from:to]) confined to it.
+type clipCall struct {
+	x, y, w, h float64
+	from, to   int
 }
 
 type drawCall struct {
@@ -49,6 +68,17 @@ type strokeCall struct {
 	color                   string
 }
 
+type imageCall struct {
+	page       int
+	x, y, w, h float64
+	name       string
+}
+
+// pageCall records the size each page was added at (sections may differ).
+type pageCall struct {
+	widthPt, heightPt float64
+}
+
 func (f *fakeRenderer) SetFont(_ string, bold, _, _ bool, sizePt float64) {
 	f.bold, f.size = bold, sizePt
 }
@@ -56,9 +86,27 @@ func (f *fakeRenderer) SetTextColor(colorHex string) { f.color = colorHex }
 func (f *fakeRenderer) TextWidth(s string) float64 {
 	return float64(len([]rune(s))) * f.size * 0.5
 }
-func (f *fakeRenderer) AddPage() { f.page++ }
+func (f *fakeRenderer) AddPage(widthPt, heightPt float64) {
+	f.page++
+	f.pages = append(f.pages, pageCall{widthPt: widthPt, heightPt: heightPt})
+}
 func (f *fakeRenderer) DrawText(x, y float64, s string) {
 	f.draws = append(f.draws, drawCall{page: f.page, x: x, y: y, text: s, size: f.size, bold: f.bold, color: f.color})
+}
+func (f *fakeRenderer) DrawImage(x, y, w, h float64, img *Image) {
+	f.images = append(f.images, imageCall{page: f.page, x: x, y: y, w: w, h: h, name: img.Name})
+}
+
+// testFlow is a flow over the default (single full-width column) section with
+// the cursor at the top margin, for exercising renderers that draw into a frame
+// without going through Converter.render.
+func testFlow(f *fakeRenderer) *flow {
+	g := testGeometry
+	sec := layoutSection(Section{
+		Geometry: g,
+		Columns:  []Column{{WidthPt: g.WidthPt - g.MarginLeftPt - g.MarginRightPt}},
+	})
+	return &flow{r: f, sec: sec, y: sec.cols[0].originY, atTop: true}
 }
 func (f *fakeRenderer) FillRect(x, y, w, h float64, colorHex string) {
 	f.fills = append(f.fills, fillCall{page: f.page, x: x, y: y, w: w, h: h, color: colorHex})
@@ -66,6 +114,32 @@ func (f *fakeRenderer) FillRect(x, y, w, h float64, colorHex string) {
 func (f *fakeRenderer) StrokeLine(x1, y1, x2, y2, widthPt float64, colorHex string) {
 	f.strokes = append(f.strokes, strokeCall{page: f.page, x1: x1, y1: y1, x2: x2, y2: y2, widthPt: widthPt, color: colorHex})
 }
+
+// Rotate/RotateEnd record the rotated blocks (vertical cell text). Draw calls
+// inside one keep their un-rotated coordinates, which is what the layout
+// computed; rotations reports the transform that would place them on the page.
+func (f *fakeRenderer) Rotate(deg, x, y float64) {
+	f.rotations = append(f.rotations, rotateCall{deg: deg, x: x, y: y, from: len(f.draws)})
+}
+
+func (f *fakeRenderer) RotateEnd() {
+	if n := len(f.rotations); n > 0 {
+		f.rotations[n-1].to = len(f.draws)
+	}
+}
+
+// Clip/ClipEnd record the clipped blocks (cells of a fixed-height row); draw
+// calls inside one are recorded as usual, since the fake does no clipping.
+func (f *fakeRenderer) Clip(x, y, w, h float64) {
+	f.clips = append(f.clips, clipCall{x: x, y: y, w: w, h: h, from: len(f.draws)})
+}
+
+func (f *fakeRenderer) ClipEnd() {
+	if n := len(f.clips); n > 0 {
+		f.clips[n-1].to = len(f.draws)
+	}
+}
+
 func (f *fakeRenderer) Output(io.Writer) error { return nil }
 
 func run(text string, size float64) Run {
@@ -275,7 +349,7 @@ func TestRender_SpaceAfterShiftsFollowingTableDown(t *testing.T) {
 	if len(f.draws) != 2 {
 		t.Fatalf("expected 2 draws (paragraph + cell text), got %d", len(f.draws))
 	}
-	wantCellBaseline := marginPt + 12*lineSpacing + 20 + cellPaddingPt + 12
+	wantCellBaseline := marginPt + 12*lineSpacing + 20 + 12
 	if f.draws[1].y != wantCellBaseline {
 		t.Fatalf("table cell text y = %.2f, want %.2f (shifted by the preceding paragraph's space-after)", f.draws[1].y, wantCellBaseline)
 	}

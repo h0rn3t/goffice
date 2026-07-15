@@ -3,6 +3,7 @@ package document
 import (
 	"encoding/xml"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -80,12 +81,19 @@ func (b *xmlBody) UnmarshalXML(d *xml.Decoder, _ xml.StartElement) error {
 	}
 }
 
-// xmlSectPr is the body-level <w:sectPr> section geometry. Only page size
-// (w:pgSz) and margins (w:pgMar) are modeled; columns, headers/footers,
-// gutter, and section-type breaks are out of scope - see design.md.
+// xmlSectPr is a <w:sectPr>: page size (w:pgSz), margins (w:pgMar), column
+// layout (w:cols), break type (w:type), and the header/footer parts the section
+// references. It appears body-level (the last section's properties) or inside a
+// paragraph's w:pPr (ending that section there). w:gutter and even/odd
+// header-footer classes are out of scope - see design.md.
 type xmlSectPr struct {
-	PgSz  *xmlPgSz  `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main pgSz"`
-	PgMar *xmlPgMar `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main pgMar"`
+	Type       *xmlVal        `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main type"`
+	PgSz       *xmlPgSz       `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main pgSz"`
+	PgMar      *xmlPgMar      `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main pgMar"`
+	Cols       *xmlCols       `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main cols"`
+	TitlePg    *xmlOnOff      `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main titlePg"`
+	HeaderRefs []xmlHdrFtrRef `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main headerReference"`
+	FooterRefs []xmlHdrFtrRef `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main footerReference"`
 }
 
 // xmlPgSz is <w:pgSz>'s w:w/w:h page dimensions, in dxa (twentieths of a point).
@@ -94,13 +102,15 @@ type xmlPgSz struct {
 	H string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main h,attr"`
 }
 
-// xmlPgMar is <w:pgMar>'s four page margins, in dxa. w:header/w:footer/w:gutter
-// are out of scope.
+// xmlPgMar is <w:pgMar>'s four page margins plus the header's distance from the
+// top edge and the footer's from the bottom, in dxa. w:gutter is out of scope.
 type xmlPgMar struct {
 	Top    string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main top,attr"`
 	Right  string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main right,attr"`
 	Bottom string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main bottom,attr"`
 	Left   string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main left,attr"`
+	Header string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main header,attr"`
+	Footer string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main footer,attr"`
 }
 
 type xmlParagraph struct {
@@ -115,6 +125,9 @@ type xmlPPr struct {
 	Ind             *xmlInd      `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main ind"`
 	Spacing         *xmlPSpacing `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main spacing"`
 	NumPr           *xmlNumPr    `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main numPr"`
+	Shd             *xmlShd      `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main shd"`
+	// SectPr is only meaningful on a body paragraph: it ends a section there.
+	SectPr *xmlSectPr `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main sectPr"`
 }
 
 // xmlNumPr is <w:numPr>: a reference into word/numbering.xml by list id
@@ -144,20 +157,22 @@ type xmlPSpacing struct {
 	LineRule string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main lineRule,attr"`
 }
 
-// xmlRun captures its rPr plus an ordered sequence of text and break children
-// via a custom UnmarshalXML (encoding/xml's separate slices would lose the
-// document order of <w:t> and <w:br>, which matters for in-paragraph line
-// breaks). Unsupported run children (e.g. <w:tab>) are skipped without error.
+// xmlRun captures its rPr plus an ordered sequence of text, break and picture
+// children via a custom UnmarshalXML (encoding/xml's separate slices would lose
+// the document order of <w:t>, <w:br> and <w:drawing>, which matters for
+// in-paragraph line breaks and inline images). Unsupported run children (e.g.
+// <w:tab>) are skipped without error.
 type xmlRun struct {
 	Props   *xmlRPr
 	Content []xmlRunContent
 }
 
-// xmlRunContent is one ordered item of a run: exactly one of Text or Break is
-// non-nil.
+// xmlRunContent is one ordered item of a run: exactly one field is non-nil.
 type xmlRunContent struct {
-	Text  *string
-	Break *xmlBr
+	Text    *string
+	Break   *xmlBr
+	Drawing *xmlDrawing
+	Pict    *xmlPict
 }
 
 func (r *xmlRun) UnmarshalXML(d *xml.Decoder, _ xml.StartElement) error {
@@ -202,6 +217,18 @@ func (r *xmlRun) UnmarshalXML(d *xml.Decoder, _ xml.StartElement) error {
 				return err
 			}
 			r.Content = append(r.Content, xmlRunContent{Break: &b})
+		case "drawing":
+			var dr xmlDrawing
+			if err := d.DecodeElement(&dr, &start); err != nil {
+				return err
+			}
+			r.Content = append(r.Content, xmlRunContent{Drawing: &dr})
+		case "pict":
+			var p xmlPict
+			if err := d.DecodeElement(&p, &start); err != nil {
+				return err
+			}
+			r.Content = append(r.Content, xmlRunContent{Pict: &p})
 		default:
 			if err := d.Skip(); err != nil {
 				return err
@@ -218,18 +245,28 @@ type xmlRPr struct {
 	Fonts     *xmlRFonts `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main rFonts"`
 	Size      *xmlVal    `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main sz"`
 	Color     *xmlColor  `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main color"`
+	Shd       *xmlShd    `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main shd"`
+	Highlight *xmlVal    `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main highlight"`
 }
 
 // xmlColor is <w:color>: an explicit sRGB hex value (w:val, or "auto") and/or a
-// theme-scheme reference (w:themeColor) resolved through word/theme/theme1.xml.
+// theme-scheme reference (w:themeColor) resolved through word/theme/theme1.xml,
+// optionally lightened (w:themeTint) or darkened (w:themeShade).
 type xmlColor struct {
 	Val        string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main val,attr"`
 	ThemeColor string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main themeColor,attr"`
+	ThemeTint  string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main themeTint,attr"`
+	ThemeShade string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main themeShade,attr"`
 }
 
+// xmlRFonts is <w:rFonts>: an explicit typeface (w:ascii/w:hAnsi) and/or a
+// reference into the theme's font scheme (w:asciiTheme/w:hAnsiTheme, e.g.
+// "minorHAnsi"), resolved through word/theme/theme1.xml.
 type xmlRFonts struct {
-	ASCII string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main ascii,attr"`
-	HAnsi string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main hAnsi,attr"`
+	ASCII      string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main ascii,attr"`
+	HAnsi      string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main hAnsi,attr"`
+	ASCIITheme string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main asciiTheme,attr"`
+	HAnsiTheme string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main hAnsiTheme,attr"`
 }
 
 type xmlText struct {
@@ -271,10 +308,48 @@ type xmlTable struct {
 }
 
 type xmlTblPr struct {
-	StyleID *xmlVal     `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblStyle"`
-	Borders *xmlBorders `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblBorders"`
-	Ind     *xmlTblInd  `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblInd"`
-	Look    *xmlTblLook `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblLook"`
+	StyleID *xmlVal       `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblStyle"`
+	Borders *xmlBorders   `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblBorders"`
+	Ind     *xmlTblInd    `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblInd"`
+	Look    *xmlTblLook   `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblLook"`
+	CellMar *xmlTcMar     `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblCellMar"`
+	Layout  *xmlTblLayout `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblLayout"`
+	TblW    *xmlTblWidth  `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblW"`
+	Float   *xmlTblPPr    `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblpPr"`
+}
+
+// xmlTblPPr is <w:tblpPr>: a floating table's offset from - or alignment
+// against - its horizontal and vertical anchors. The distances it keeps from the
+// surrounding text (w:leftFromText and friends) are out of scope: the text does
+// not wrap around the table.
+type xmlTblPPr struct {
+	X          string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblpX,attr"`
+	Y          string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblpY,attr"`
+	XSpec      string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblpXSpec,attr"`
+	YSpec      string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblpYSpec,attr"`
+	HorzAnchor string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main horzAnchor,attr"`
+	VertAnchor string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main vertAnchor,attr"`
+}
+
+// xmlTblLayout is <w:tblLayout>: "fixed" (the declared widths are final) or
+// "autofit" (the default: undeclared widths come from the content).
+type xmlTblLayout struct {
+	Type string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main type,attr"`
+}
+
+// xmlTcMar is a cell's inner padding: <w:tcMar> on a cell, or <w:tblCellMar> on
+// a table (or its style), whose four sides carry a width and a unit.
+type xmlTcMar struct {
+	Top    *xmlTblWidth `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main top"`
+	Bottom *xmlTblWidth `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main bottom"`
+	Left   *xmlTblWidth `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main left"`
+	Right  *xmlTblWidth `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main right"`
+}
+
+// xmlTblWidth is the w:w/w:type pair shared by w:tcW and the w:tcMar sides.
+type xmlTblWidth struct {
+	W    string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main w,attr"`
+	Type string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main type,attr"`
 }
 
 // xmlTblLook is <w:tblLook>: which conditional table-style regions are active.
@@ -305,7 +380,22 @@ type xmlGridCol struct {
 }
 
 type xmlRow struct {
+	Props *xmlTrPr  `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main trPr"`
 	Cells []xmlCell `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tc"`
+}
+
+// xmlTrPr is <w:trPr>: whether the row repeats on every page the table
+// continues onto (w:tblHeader) and its declared height (w:trHeight).
+type xmlTrPr struct {
+	TblHeader *xmlOnOff    `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblHeader"`
+	Height    *xmlTrHeight `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main trHeight"`
+}
+
+// xmlTrHeight is <w:trHeight>: a height in dxa (w:val) and how it binds
+// (w:hRule = auto/atLeast/exact).
+type xmlTrHeight struct {
+	Val   string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main val,attr"`
+	HRule string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main hRule,attr"`
 }
 
 type xmlCell struct {
@@ -315,11 +405,14 @@ type xmlCell struct {
 }
 
 type xmlTcPr struct {
-	GridSpan *xmlVal     `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main gridSpan"`
-	VMerge   *xmlVMerge  `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main vMerge"`
-	Borders  *xmlBorders `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tcBorders"`
-	Shd      *xmlShd     `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main shd"`
-	TcW      *xmlTcW     `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tcW"`
+	GridSpan *xmlVal      `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main gridSpan"`
+	VMerge   *xmlVMerge   `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main vMerge"`
+	Borders  *xmlBorders  `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tcBorders"`
+	Shd      *xmlShd      `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main shd"`
+	TcW      *xmlTblWidth `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tcW"`
+	Mar      *xmlTcMar    `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tcMar"`
+	TextDir  *xmlVal      `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main textDirection"`
+	VAlign   *xmlVal      `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main vAlign"`
 }
 
 // xmlVMerge is <w:vMerge/> (continue - w:val absent or "continue") or
@@ -328,22 +421,33 @@ type xmlVMerge struct {
 	Val string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main val,attr"`
 }
 
-type xmlTcW struct {
-	W    string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main w,attr"`
-	Type string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main type,attr"`
-}
-
+// xmlShd is <w:shd>, shared by runs, paragraphs and table cells: a background
+// fill (w:fill), a pattern (w:val) and its foreground color (w:color), each of
+// which may instead reference a theme slot with an optional tint/shade.
 type xmlShd struct {
-	Fill string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main fill,attr"`
+	Val            string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main val,attr"`
+	Color          string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main color,attr"`
+	Fill           string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main fill,attr"`
+	ThemeColor     string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main themeColor,attr"`
+	ThemeTint      string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main themeTint,attr"`
+	ThemeShade     string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main themeShade,attr"`
+	ThemeFill      string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main themeFill,attr"`
+	ThemeFillTint  string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main themeFillTint,attr"`
+	ThemeFillShade string `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main themeFillShade,attr"`
 }
 
-// xmlBorders is shared by w:tblBorders and w:tcBorders (top/bottom/left/right
-// sides only; diagonal and inside-grid-line borders are out of scope).
+// xmlBorders is shared by w:tblBorders and w:tcBorders: the four sides, the two
+// inside grid lines (which only a table declares), and the two diagonals (which
+// only a cell declares).
 type xmlBorders struct {
-	Top    *xmlBorder `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main top"`
-	Bottom *xmlBorder `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main bottom"`
-	Left   *xmlBorder `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main left"`
-	Right  *xmlBorder `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main right"`
+	Top     *xmlBorder `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main top"`
+	Bottom  *xmlBorder `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main bottom"`
+	Left    *xmlBorder `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main left"`
+	Right   *xmlBorder `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main right"`
+	InsideH *xmlBorder `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main insideH"`
+	InsideV *xmlBorder `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main insideV"`
+	TL2BR   *xmlBorder `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tl2br"`
+	TR2BL   *xmlBorder `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tr2bl"`
 }
 
 type xmlBorder struct {
@@ -380,49 +484,75 @@ type xmlRPrDefault struct {
 }
 
 type xmlStyle struct {
-	Type         string          `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main type,attr"`
-	StyleID      string          `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main styleId,attr"`
-	BasedOn      *xmlVal         `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main basedOn"`
-	TblPr        *xmlTblPr       `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblPr"`
-	TcPr         *xmlTcPr        `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tcPr"`
-	PPr          *xmlPPr         `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main pPr"`
-	RPr          *xmlRPr         `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main rPr"`
-	TblStylePr   []xmlTblStylePr `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblStylePr"`
-	RowBandSize  *xmlVal         `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblStyleRowBandSize"`
-	ColBandSize  *xmlVal         `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblStyleColBandSize"`
+	Type        string          `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main type,attr"`
+	StyleID     string          `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main styleId,attr"`
+	BasedOn     *xmlVal         `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main basedOn"`
+	TblPr       *xmlTblPr       `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblPr"`
+	TcPr        *xmlTcPr        `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tcPr"`
+	PPr         *xmlPPr         `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main pPr"`
+	RPr         *xmlRPr         `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main rPr"`
+	TblStylePr  []xmlTblStylePr `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblStylePr"`
+	RowBandSize *xmlVal         `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblStyleRowBandSize"`
+	ColBandSize *xmlVal         `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblStyleColBandSize"`
 }
 
-// xmlTblStylePr is one conditional formatting region of a table style.
+// xmlTblStylePr is one conditional formatting region of a table style: its
+// borders and shading, plus the paragraph and run formatting (w:pPr/w:rPr) the
+// region gives the cells it covers - which is how a table style makes its header
+// row bold or centered.
 type xmlTblStylePr struct {
 	Type  string    `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main type,attr"`
 	TblPr *xmlTblPr `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tblPr"`
 	TcPr  *xmlTcPr  `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main tcPr"`
+	PPr   *xmlPPr   `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main pPr"`
+	RPr   *xmlRPr   `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main rPr"`
 }
 
-// knownTblStylePrTypes are the w:tblStylePr/@w:type values we apply.
+// knownTblStylePrTypes are the w:tblStylePr/@w:type values we apply: the whole
+// table, the banded rows/columns, the first/last row and column, and the four
+// corner cells.
 var knownTblStylePrTypes = map[string]bool{
-	"firstRow":  true,
-	"lastRow":   true,
-	"firstCol":  true,
-	"lastCol":   true,
-	"band1Horz": true,
-	"band2Horz": true,
-	"band1Vert": true,
-	"band2Vert": true,
+	"wholeTable": true,
+	"firstRow":   true,
+	"lastRow":    true,
+	"firstCol":   true,
+	"lastCol":    true,
+	"band1Horz":  true,
+	"band2Horz":  true,
+	"band1Vert":  true,
+	"band2Vert":  true,
+	"nwCell":     true,
+	"neCell":     true,
+	"swCell":     true,
+	"seCell":     true,
 }
 
-// resolvedTableStyleRegion holds borders/shading from one tblStylePr region.
+// resolvedTableStyleRegion holds one tblStylePr region's contribution: its
+// table-level borders (from the region's w:tblPr, so its inside grid lines still
+// only apply between cells), its cell-level ones (from the region's w:tcPr,
+// which land on every cell it covers), its shading, and the paragraph/run
+// formatting of those cells.
 type resolvedTableStyleRegion struct {
-	Borders *xmlBorders
-	Shd     *xmlShd
+	TblBorders  *xmlBorders
+	CellBorders *xmlBorders
+	Shd         *xmlShd
+	PPr         *xmlPPr
+	RPr         *xmlRPr
 }
 
-// resolvedTableStyle is a table style's effective border/shading/indent
-// base plus conditional regions, after following its w:basedOn chain.
+// resolvedTableStyle is a table style's effective border/shading/indent/cell
+// margin base, its whole-table paragraph and run formatting, and its conditional
+// regions, after following its w:basedOn chain.
 type resolvedTableStyle struct {
+	// Borders are the style's table-level ones (from its w:tblPr); CellBorders
+	// are the ones it puts on every cell (from its w:tcPr).
 	Borders     *xmlBorders
+	CellBorders *xmlBorders
 	Shd         *xmlShd
 	Ind         *xmlTblInd
+	CellMar     *xmlTcMar
+	PPr         *xmlPPr
+	RPr         *xmlRPr
 	Regions     map[string]resolvedTableStyleRegion
 	RowBandSize int
 	ColBandSize int
@@ -477,10 +607,14 @@ func resolveTableStyle(id string, defs map[string]xmlStyle, cache map[string]res
 	if def.TblPr != nil {
 		own.Borders = def.TblPr.Borders
 		own.Ind = def.TblPr.Ind
+		own.CellMar = def.TblPr.CellMar
 	}
 	if def.TcPr != nil {
 		own.Shd = def.TcPr.Shd
+		own.CellBorders = def.TcPr.Borders
 	}
+	own.PPr = def.PPr
+	own.RPr = def.RPr
 	own.Regions = ownTblStylePrRegions(def.TblStylePr)
 	own.RowBandSize = parseBandSize(def.RowBandSize)
 	own.ColBandSize = parseBandSize(def.ColBandSize)
@@ -491,8 +625,12 @@ func resolveTableStyle(id string, defs map[string]xmlStyle, cache map[string]res
 	}
 	merged := resolvedTableStyle{
 		Borders:     mergeBorders(own.Borders, parent.Borders),
+		CellBorders: mergeBorders(own.CellBorders, parent.CellBorders),
 		Shd:         coalesceShd(own.Shd, parent.Shd),
 		Ind:         coalesceTblInd(own.Ind, parent.Ind),
+		CellMar:     mergeTcMar(own.CellMar, parent.CellMar),
+		PPr:         mergePPr(own.PPr, parent.PPr),
+		RPr:         mergeRPr(own.RPr, parent.RPr),
 		Regions:     mergeTblStylePrRegions(own.Regions, parent.Regions),
 		RowBandSize: coalesceBandSize(own.RowBandSize, parent.RowBandSize),
 		ColBandSize: coalesceBandSize(own.ColBandSize, parent.ColBandSize),
@@ -532,13 +670,13 @@ func ownTblStylePrRegions(prs []xmlTblStylePr) map[string]resolvedTableStyleRegi
 		if !knownTblStylePrTypes[typ] {
 			continue
 		}
-		var r resolvedTableStyleRegion
+		r := resolvedTableStyleRegion{PPr: pr.PPr, RPr: pr.RPr}
 		if pr.TcPr != nil {
-			r.Borders = pr.TcPr.Borders
+			r.CellBorders = pr.TcPr.Borders
 			r.Shd = pr.TcPr.Shd
 		}
-		if pr.TblPr != nil && pr.TblPr.Borders != nil {
-			r.Borders = mergeBorders(r.Borders, pr.TblPr.Borders)
+		if pr.TblPr != nil {
+			r.TblBorders = pr.TblPr.Borders
 		}
 		out[typ] = r
 	}
@@ -559,11 +697,66 @@ func mergeTblStylePrRegions(own, parent map[string]resolvedTableStyleRegion) map
 	for k, o := range own {
 		p := out[k]
 		out[k] = resolvedTableStyleRegion{
-			Borders: mergeBorders(o.Borders, p.Borders),
-			Shd:     coalesceShd(o.Shd, p.Shd),
+			TblBorders:  mergeBorders(o.TblBorders, p.TblBorders),
+			CellBorders: mergeBorders(o.CellBorders, p.CellBorders),
+			Shd:         coalesceShd(o.Shd, p.Shd),
+			PPr:         mergePPr(o.PPr, p.PPr),
+			RPr:         mergeRPr(o.RPr, p.RPr),
 		}
 	}
 	return out
+}
+
+// mergeTcMar combines two cell-margin declarations per side, own winning; a nil
+// result means neither declared anything (so the defaults apply).
+func mergeTcMar(own, fallback *xmlTcMar) *xmlTcMar {
+	if own == nil && fallback == nil {
+		return nil
+	}
+	var o, f xmlTcMar
+	if own != nil {
+		o = *own
+	}
+	if fallback != nil {
+		f = *fallback
+	}
+	return &xmlTcMar{
+		Top:    coalesceTblWidth(o.Top, f.Top),
+		Bottom: coalesceTblWidth(o.Bottom, f.Bottom),
+		Left:   coalesceTblWidth(o.Left, f.Left),
+		Right:  coalesceTblWidth(o.Right, f.Right),
+	}
+}
+
+func coalesceTblWidth(a, b *xmlTblWidth) *xmlTblWidth {
+	if a != nil {
+		return a
+	}
+	return b
+}
+
+// mergePPr combines two paragraph-property declarations per field, own winning.
+// Only the fields a table style can contribute are merged: w:pStyle,
+// w:pageBreakBefore and w:sectPr are meaningful on a paragraph itself, not as an
+// inherited tier.
+func mergePPr(own, fallback *xmlPPr) *xmlPPr {
+	if own == nil && fallback == nil {
+		return nil
+	}
+	var o, f xmlPPr
+	if own != nil {
+		o = *own
+	}
+	if fallback != nil {
+		f = *fallback
+	}
+	return &xmlPPr{
+		Jc:      coalesceVal(o.Jc, f.Jc),
+		Ind:     coalesceInd(o.Ind, f.Ind),
+		Spacing: mergeSpacing(o.Spacing, f.Spacing),
+		NumPr:   coalesceNumPr(o.NumPr, f.NumPr),
+		Shd:     coalesceShd(o.Shd, f.Shd),
+	}
 }
 
 // parseTblLook turns w:tblLook into flags. When look is nil, defaults match
@@ -632,10 +825,14 @@ func mergeBorders(own, fallback *xmlBorders) *xmlBorders {
 		f = *fallback
 	}
 	return &xmlBorders{
-		Top:    coalesceBorder(o.Top, f.Top),
-		Bottom: coalesceBorder(o.Bottom, f.Bottom),
-		Left:   coalesceBorder(o.Left, f.Left),
-		Right:  coalesceBorder(o.Right, f.Right),
+		Top:     coalesceBorder(o.Top, f.Top),
+		Bottom:  coalesceBorder(o.Bottom, f.Bottom),
+		Left:    coalesceBorder(o.Left, f.Left),
+		Right:   coalesceBorder(o.Right, f.Right),
+		InsideH: coalesceBorder(o.InsideH, f.InsideH),
+		InsideV: coalesceBorder(o.InsideV, f.InsideV),
+		TL2BR:   coalesceBorder(o.TL2BR, f.TL2BR),
+		TR2BL:   coalesceBorder(o.TR2BL, f.TR2BL),
 	}
 }
 
@@ -674,6 +871,7 @@ type resolvedParaStyle struct {
 	Jc      *xmlVal
 	Ind     *xmlInd
 	NumPr   *xmlNumPr
+	Shd     *xmlShd
 	RPr     *xmlRPr
 }
 
@@ -717,6 +915,7 @@ func resolveParaStyle(id string, defs map[string]xmlStyle, cache map[string]reso
 		own.Jc = def.PPr.Jc
 		own.Ind = def.PPr.Ind
 		own.NumPr = def.PPr.NumPr
+		own.Shd = def.PPr.Shd
 	}
 	own.RPr = def.RPr
 	var parent resolvedParaStyle
@@ -728,6 +927,7 @@ func resolveParaStyle(id string, defs map[string]xmlStyle, cache map[string]reso
 		Jc:      coalesceVal(own.Jc, parent.Jc),
 		Ind:     coalesceInd(own.Ind, parent.Ind),
 		NumPr:   coalesceNumPr(own.NumPr, parent.NumPr),
+		Shd:     coalesceShd(own.Shd, parent.Shd),
 		RPr:     mergeRPr(own.RPr, parent.RPr),
 	}
 	cache[id] = merged
@@ -800,6 +1000,8 @@ func mergeRPr(own, fallback *xmlRPr) *xmlRPr {
 		Fonts:     coalesceFonts(o.Fonts, f.Fonts),
 		Size:      coalesceVal(o.Size, f.Size),
 		Color:     coalesceColor(o.Color, f.Color),
+		Shd:       coalesceShd(o.Shd, f.Shd),
+		Highlight: coalesceVal(o.Highlight, f.Highlight),
 	}
 }
 
@@ -884,32 +1086,61 @@ func coalesceStr(a, b string) string {
 
 // styleContext bundles the resolved style data threaded through the builders:
 // table styles (borders/shading/indent), paragraph styles, character styles,
-// the document-wide w:docDefaults paragraph/run properties, the theme color
-// map, and the mutable list-numbering state (nil when the document has no
-// lists).
+// the document-wide w:docDefaults paragraph/run properties, the theme color and
+// font maps, the image resolver for the part being built, and the mutable
+// list-numbering state (nil when the document has no lists).
+// tablePPr/tableRPr are set only while a table cell's paragraphs are built: the
+// formatting its table style (and the conditional regions covering it) give the
+// cell, a tier below the paragraph/character styles and above w:docDefaults.
 type styleContext struct {
 	tables     map[string]resolvedTableStyle
 	paragraphs map[string]resolvedParaStyle
 	chars      map[string]*xmlRPr
 	defaultPPr *xmlPPr
 	defaultRPr *xmlRPr
+	tablePPr   *xmlPPr
+	tableRPr   *xmlRPr
 	theme      map[string]string
+	themeFonts map[string]string
+	images     *imageResolver
 	numbering  *numberingState
 }
 
-func buildBody(body xmlBody, sc styleContext) []BodyElement {
+// underPPr is the paragraph-property tier beneath the named styles: the table
+// style's contribution (when building a cell) over w:docDefaults.
+func (sc styleContext) underPPr() *xmlPPr {
+	if sc.defaultPPr == nil {
+		return sc.tablePPr
+	}
+	return mergePPr(sc.tablePPr, sc.defaultPPr)
+}
+
+// underRPr is the run-property tier beneath the named styles: the table style's
+// contribution over w:docDefaults.
+func (sc styleContext) underRPr() *xmlRPr {
+	return mergeRPr(sc.tableRPr, sc.defaultRPr)
+}
+
+// buildBody converts a body (or a header/footer part, which holds the same
+// children) into body elements, and reports every mid-body section break: a
+// paragraph whose w:pPr carries a w:sectPr ends a section right after it.
+func buildBody(body xmlBody, sc styleContext) ([]BodyElement, []sectionBreak) {
 	elems := make([]BodyElement, 0, len(body.Children))
+	var breaks []sectionBreak
 	for _, c := range body.Children {
 		switch {
 		case c.Paragraph != nil:
 			p := buildParagraph(*c.Paragraph, sc)
 			elems = append(elems, BodyElement{Paragraph: &p})
+			if c.Paragraph.Props != nil && c.Paragraph.Props.SectPr != nil {
+				breaks = append(breaks, sectionBreak{props: c.Paragraph.Props.SectPr, end: len(elems)})
+			}
 		case c.Table != nil:
 			t := buildTable(*c.Table, sc)
 			elems = append(elems, BodyElement{Table: &t})
 		}
 	}
-	return elems
+	return elems, breaks
 }
 
 func buildParagraphSlice(xps []xmlParagraph, sc styleContext) []Paragraph {
@@ -932,37 +1163,50 @@ func buildParagraph(xp xmlParagraph, sc styleContext) Paragraph {
 		}
 	}
 	ps, hasStyle := sc.paragraphs[pStyleID]
+	// under is the tier beneath the named styles: the table style's cell
+	// formatting (inside a table) over w:docDefaults.
+	under := sc.underPPr()
 
-	// Alignment: inline w:jc → paragraph style → docDefaults → left.
+	// Alignment: inline w:jc → paragraph style → table style → docDefaults → left.
 	jc := inlinePPr.jc()
 	if jc == nil && hasStyle {
 		jc = ps.Jc
 	}
-	if jc == nil && sc.defaultPPr != nil {
-		jc = sc.defaultPPr.Jc
+	if jc == nil && under != nil {
+		jc = under.Jc
 	}
 	p.Props.Alignment = alignmentFrom(jc)
 
-	// Indent: inline w:ind → paragraph style → docDefaults. A nil result means
-	// the paragraph declared no indent, in which case a list level may supply
-	// its own (typically hanging) indent below.
+	// Indent: inline w:ind → paragraph style → table style → docDefaults. A nil
+	// result means the paragraph declared no indent, in which case a list level
+	// may supply its own (typically hanging) indent below.
 	ind := inlinePPr.ind()
 	if ind == nil && hasStyle {
 		ind = ps.Ind
 	}
-	if ind == nil && sc.defaultPPr != nil {
-		ind = sc.defaultPPr.Ind
+	if ind == nil && under != nil {
+		ind = under.Ind
 	}
 
 	p.Props.Spacing = resolveSpacing(inlinePPr.spacing(), pStyleID, sc)
 
+	// Shading: inline w:shd → paragraph style → table style → docDefaults.
+	shd := inlinePPr.shd()
+	if shd == nil && hasStyle {
+		shd = ps.Shd
+	}
+	if shd == nil && under != nil {
+		shd = under.Shd
+	}
+	p.Props.Shading = resolveShading(shd, sc.theme)
+
 	// Numbering: prepend a marker run and (when the paragraph declared no
 	// indent) borrow the level's hanging indent.
-	if marker, mProps, mInd, ok := resolveMarker(inlinePPr, ps, hasStyle, sc); ok {
-		p.Runs = append(p.Runs, Run{Text: marker + " ", Props: mProps})
+	if m, ok := resolveMarker(inlinePPr, ps, hasStyle, sc); ok {
 		if ind == nil {
-			ind = mInd
+			ind = m.ind
 		}
+		p.Runs = append(p.Runs, markerRun(m, indentFrom(ind), sc))
 	}
 	p.Props.Indent = indentFrom(ind)
 
@@ -975,10 +1219,21 @@ func buildParagraph(xp xmlParagraph, sc styleContext) Paragraph {
 		for _, c := range xr.Content {
 			switch {
 			case c.Break != nil:
-				if strings.EqualFold(strings.TrimSpace(c.Break.Type), "page") {
+				switch strings.ToLower(strings.TrimSpace(c.Break.Type)) {
+				case "page":
 					p.Props.PageBreak = true
-				} else {
+				case "column":
+					p.Props.ColumnBreak = true
+				default:
 					p.Runs = append(p.Runs, Run{LineBreak: true})
+				}
+			case c.Drawing != nil:
+				if img := c.Drawing.image(sc.images); img != nil {
+					p.Runs = append(p.Runs, Run{Image: img, Props: props})
+				}
+			case c.Pict != nil:
+				if img := c.Pict.image(sc.images); img != nil {
+					p.Runs = append(p.Runs, Run{Image: img, Props: props})
 				}
 			case c.Text != nil && *c.Text != "":
 				p.Runs = append(p.Runs, Run{Text: *c.Text, Props: props})
@@ -986,6 +1241,47 @@ func buildParagraph(xp xmlParagraph, sc styleContext) Paragraph {
 		}
 	}
 	return p
+}
+
+// markerRun turns a resolved list marker into the run that precedes the
+// paragraph's own runs: a picture-bullet image, or the marker text followed by
+// its w:suff separator. For the default "tab" suffix the marker's advance is
+// widened to the level's hanging indent, so the text after it starts exactly at
+// the paragraph's left indent - the tab stop Word aligns it to.
+func markerRun(m marker, ind Indent, sc styleContext) Run {
+	props := runPropsFrom(mergeRPr(m.rpr, sc.underRPr()), sc)
+	if m.image != nil {
+		r := Run{Image: m.image, Props: props}
+		r.MinWidthPt = markerAdvance(m.suff, ind)
+		return r
+	}
+	text := m.text
+	if strings.EqualFold(m.suff, "space") {
+		text += " "
+	}
+	return Run{Text: text, Props: props, MinWidthPt: markerAdvance(m.suff, ind)}
+}
+
+// defaultTabStopPt is the tab interval used when a list marker's tab suffix has
+// no hanging indent to align to (720 dxa = 0.5", Word's w:defaultTabStop).
+const defaultTabStopPt = 36.0
+
+// markerAdvance is the minimum width a marker run occupies. Only the "tab"
+// suffix (the default) reserves space: up to the level's hanging indent, or one
+// default tab stop when the level declares none.
+//
+// ponytail: a marker wider than that advance is simply followed by the text,
+// where Word would jump to the next tab stop; add real tab stops if a list ever
+// needs them.
+func markerAdvance(suff string, ind Indent) float64 {
+	switch strings.ToLower(strings.TrimSpace(suff)) {
+	case "space", "nothing":
+		return 0
+	}
+	if ind.FirstLineOffsetPt < 0 { // a hanging indent: the text resumes at LeftPt
+		return -ind.FirstLineOffsetPt
+	}
+	return defaultTabStopPt
 }
 
 // jc/ind/spacing are nil-safe accessors for a paragraph's inline w:pPr fields.
@@ -1010,14 +1306,20 @@ func (p *xmlPPr) spacing() *xmlPSpacing {
 	return p.Spacing
 }
 
+func (p *xmlPPr) shd() *xmlShd {
+	if p == nil {
+		return nil
+	}
+	return p.Shd
+}
+
 // resolveMarker resolves a paragraph's list marker: it finds the numbering
-// reference (inline w:numPr → paragraph style's numPr), advances that list's
-// document-order counter, and returns the formatted marker text, the marker
-// run's properties, and the level's indent. ok is false when the paragraph is
-// not a list item or the reference resolves to no known level.
-func resolveMarker(inlinePPr *xmlPPr, ps resolvedParaStyle, hasStyle bool, sc styleContext) (string, RunProperties, *xmlInd, bool) {
+// reference (inline w:numPr → paragraph style's numPr) and advances that list's
+// document-order counter. ok is false when the paragraph is not a list item or
+// the reference resolves to no known level.
+func resolveMarker(inlinePPr *xmlPPr, ps resolvedParaStyle, hasStyle bool, sc styleContext) (marker, bool) {
 	if sc.numbering == nil {
-		return "", RunProperties{}, nil, false
+		return marker{}, false
 	}
 	var np *xmlNumPr
 	if inlinePPr != nil {
@@ -1027,11 +1329,11 @@ func resolveMarker(inlinePPr *xmlPPr, ps resolvedParaStyle, hasStyle bool, sc st
 		np = ps.NumPr
 	}
 	if np == nil || np.NumID == nil {
-		return "", RunProperties{}, nil, false
+		return marker{}, false
 	}
 	numID := strings.TrimSpace(np.NumID.Val)
 	if numID == "" {
-		return "", RunProperties{}, nil, false
+		return marker{}, false
 	}
 	ilvl := 0
 	if np.Ilvl != nil {
@@ -1039,14 +1341,7 @@ func resolveMarker(inlinePPr *xmlPPr, ps resolvedParaStyle, hasStyle bool, sc st
 			ilvl = v
 		}
 	}
-	m, ok := sc.numbering.advance(numID, ilvl)
-	if !ok {
-		return "", RunProperties{}, nil, false
-	}
-	// The marker's own run props resolve from the level's rPr over docDefaults
-	// (never the paragraph style's rPr or the first content run - see design).
-	mProps := runPropsFrom(mergeRPr(m.rpr, sc.defaultRPr), sc.theme)
-	return m.text, mProps, m.ind, true
+	return sc.numbering.advance(numID, ilvl)
 }
 
 func alignmentFrom(jc *xmlVal) Alignment {
@@ -1088,11 +1383,12 @@ func indentFrom(ind *xmlInd) Indent {
 
 // resolveSpacing resolves a paragraph's effective spacing per field: inline
 // w:spacing wins, else the referenced paragraph style's resolved spacing
-// (looked up by w:pStyle), else the document defaults, else zero.
+// (looked up by w:pStyle), else the table style's (inside a cell), else the
+// document defaults, else zero.
 func resolveSpacing(inline *xmlPSpacing, pStyleID string, sc styleContext) Spacing {
 	var styleThenDefault *xmlPSpacing
-	if sc.defaultPPr != nil {
-		styleThenDefault = sc.defaultPPr.Spacing
+	if under := sc.underPPr(); under != nil {
+		styleThenDefault = under.Spacing
 	}
 	if ps, ok := sc.paragraphs[pStyleID]; ok {
 		styleThenDefault = mergeSpacing(ps.Spacing, styleThenDefault)
@@ -1144,14 +1440,15 @@ func resolveRunProps(inline *xmlRPr, pStyleRPr *xmlRPr, sc styleContext) RunProp
 			charRPr = sc.chars[id] // nil for an unknown style id (tier skipped)
 		}
 	}
-	merged := mergeRPr(inline, mergeRPr(charRPr, mergeRPr(pStyleRPr, sc.defaultRPr)))
-	return runPropsFrom(merged, sc.theme)
+	merged := mergeRPr(inline, mergeRPr(charRPr, mergeRPr(pStyleRPr, sc.underRPr())))
+	return runPropsFrom(merged, sc)
 }
 
 // runPropsFrom turns an already-merged w:rPr into public RunProperties,
-// filling unset fields with the hardcoded defaults and resolving w:color
-// through the theme map.
-func runPropsFrom(rpr *xmlRPr, theme map[string]string) RunProperties {
+// filling unset fields with the hardcoded defaults and resolving colors, the
+// font (which may be a theme reference) and the run's background through the
+// theme maps.
+func runPropsFrom(rpr *xmlRPr, sc styleContext) RunProperties {
 	props := RunProperties{
 		FontFamily: defaultFontFamily,
 		SizePt:     defaultFontSizePt,
@@ -1162,41 +1459,76 @@ func runPropsFrom(rpr *xmlRPr, theme map[string]string) RunProperties {
 	props.Bold = rpr.Bold.on()
 	props.Italic = rpr.Italic.on()
 	props.Underline = underlineOn(rpr.Underline)
-	if rpr.Fonts != nil {
-		if name := firstNonEmpty(rpr.Fonts.ASCII, rpr.Fonts.HAnsi); name != "" {
-			props.FontFamily = name
-		}
+	if name := resolveFontFamily(rpr.Fonts, sc.themeFonts); name != "" {
+		props.FontFamily = name
 	}
 	if rpr.Size != nil {
 		if hp, err := strconv.ParseFloat(strings.TrimSpace(rpr.Size.Val), 64); err == nil && hp > 0 {
 			props.SizePt = hp / 2 // half-points → points
 		}
 	}
-	props.Color = resolveColor(rpr.Color, theme)
+	props.Color = resolveColor(rpr.Color, sc.theme)
+	// A highlight sits on top of any shading, so it wins when a run carries both.
+	props.Shading = firstNonEmpty(highlightHex(rpr.Highlight), resolveShading(rpr.Shd, sc.theme))
 	return props
 }
 
+// resolveFontFamily resolves a w:rFonts into a typeface name: an explicit
+// w:ascii/w:hAnsi wins, else the theme reference (w:asciiTheme/w:hAnsiTheme) is
+// looked up in the theme's font scheme. "" when neither resolves, so the caller
+// keeps its default.
+func resolveFontFamily(f *xmlRFonts, themeFonts map[string]string) string {
+	if f == nil {
+		return ""
+	}
+	if name := firstNonEmpty(f.ASCII, f.HAnsi); name != "" {
+		return name
+	}
+	for _, ref := range []string{f.ASCIITheme, f.HAnsiTheme} {
+		if slot := themeFontSlot(ref); slot != "" {
+			if name := themeFonts[slot]; name != "" {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+// themeFontSlot maps a w:*Theme font reference ("minorHAnsi", "majorBidi", …)
+// onto the font-scheme slot name used as the theme font map's key; "" for an
+// unknown value.
+func themeFontSlot(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	var scheme string
+	switch {
+	case strings.HasPrefix(v, "major"):
+		scheme = "major"
+	case strings.HasPrefix(v, "minor"):
+		scheme = "minor"
+	default:
+		return ""
+	}
+	switch strings.TrimPrefix(strings.TrimPrefix(v, "major"), "minor") {
+	case "hansi", "ascii":
+		return scheme + "latin"
+	case "eastasia":
+		return scheme + "ea"
+	case "bidi":
+		return scheme + "cs"
+	default:
+		return ""
+	}
+}
+
 // resolveColor turns a w:color into "#RRGGBB" or "" (empty → backend default
-// black). A theme reference (w:themeColor) is looked up in the theme map by
-// its scheme slot; an unknown slot, "auto", or an absent value all resolve to
-// "".
+// black). A theme reference (w:themeColor) is looked up in the theme map by its
+// scheme slot and then lightened/darkened by its w:themeTint/w:themeShade; an
+// unknown slot, "auto", or an absent value all resolve to "".
 func resolveColor(c *xmlColor, theme map[string]string) string {
 	if c == nil {
 		return ""
 	}
-	if c.ThemeColor != "" {
-		if slot := themeSlot(c.ThemeColor); slot != "" {
-			if hex, ok := theme[slot]; ok {
-				return hex
-			}
-		}
-		return ""
-	}
-	v := strings.TrimSpace(c.Val)
-	if v == "" || strings.EqualFold(v, "auto") {
-		return ""
-	}
-	return "#" + strings.ToUpper(v)
+	return resolveThemeHex(c.Val, c.ThemeColor, c.ThemeTint, c.ThemeShade, theme)
 }
 
 // themeSlot maps a w:themeColor enum value onto the clrScheme slot name used as
@@ -1244,34 +1576,111 @@ func firstNonEmpty(vals ...string) string {
 // region borders/shading fall under the table's own inline w:tblBorders
 // (inline wins per side).
 func buildTable(xt xmlTable, sc styleContext) Table {
-	var inlineBorders *xmlBorders
-	var style resolvedTableStyle
-	var haveStyle bool
+	tc := tableContext{
+		nRows: len(xt.Rows),
+		nCols: tableGridColCount(xt),
+	}
 	var tblInd *xmlTblInd
 	var look *xmlTblLook
+	var inlineCellMar *xmlTcMar
+	var fixedLayout bool
 	if xt.Props != nil {
-		inlineBorders = xt.Props.Borders
+		tc.borders = xt.Props.Borders
 		tblInd = xt.Props.Ind
 		look = xt.Props.Look
+		inlineCellMar = xt.Props.CellMar
+		fixedLayout = xt.Props.Layout != nil &&
+			strings.EqualFold(strings.TrimSpace(xt.Props.Layout.Type), "fixed")
 		if xt.Props.StyleID != nil {
 			if rs, ok := sc.tables[xt.Props.StyleID.Val]; ok {
-				style = rs
-				haveStyle = true
+				tc.style, tc.haveStyle = rs, true
 				if tblInd == nil {
 					tblInd = rs.Ind
 				}
 			}
 		}
 	}
-	flags := parseTblLook(look)
-	nRows := len(xt.Rows)
-	nCols := tableGridColCount(xt)
+	tc.flags = parseTblLook(look)
+	// Cell margins: inline w:tblCellMar over the style's, per side; a cell's own
+	// w:tcMar (resolved in buildCell) still wins over both.
+	tc.cellMar = mergeTcMar(inlineCellMar, tc.style.CellMar)
 
-	rows := make([]Row, 0, nRows)
+	rows := make([]Row, 0, tc.nRows)
+	headerRows := 0
 	for ri, xr := range xt.Rows {
-		rows = append(rows, buildRow(xr, inlineBorders, style, haveStyle, flags, ri, nRows, nCols, sc))
+		row := buildRow(xr, tc, ri, sc)
+		// Only leading header rows repeat: Word ignores a w:tblHeader further down.
+		if row.Header && headerRows == ri {
+			headerRows++
+		}
+		rows = append(rows, row)
 	}
-	return Table{Rows: rows, ColumnWidths: resolveColumnWidths(xt), IndentPt: tblIndPt(tblInd)}
+	widths, percents := resolveColumnWidths(xt)
+	table := Table{
+		Rows:           rows,
+		ColumnWidths:   widths,
+		ColumnPercents: percents,
+		IndentPt:       tblIndPt(tblInd),
+		HeaderRows:     headerRows,
+		FixedLayout:    fixedLayout,
+	}
+	if xt.Props != nil {
+		table.WidthPt, table.WidthPct = tblWidth(xt.Props.TblW)
+		table.Float = tableFloatFrom(xt.Props.Float)
+	}
+	return table
+}
+
+// tblWidth reads a w:tblW as points (type dxa) or a percentage of the available
+// width (type pct); an "auto" width is neither.
+func tblWidth(w *xmlTblWidth) (pt, pct float64) {
+	if w == nil {
+		return 0, 0
+	}
+	return tblWidthValue(w)
+}
+
+// tableFloatFrom resolves <w:tblpPr> into the public placement (nil when the
+// table is not floating).
+func tableFloatFrom(p *xmlTblPPr) *TableFloat {
+	if p == nil {
+		return nil
+	}
+	return &TableFloat{
+		XPt:        dxaToPt(p.X),
+		YPt:        dxaToPt(p.Y),
+		HorzAnchor: anchorFrom(p.HorzAnchor),
+		VertAnchor: anchorFrom(p.VertAnchor),
+		XSpec:      strings.ToLower(strings.TrimSpace(p.XSpec)),
+		YSpec:      strings.ToLower(strings.TrimSpace(p.YSpec)),
+	}
+}
+
+// anchorFrom resolves w:horzAnchor/w:vertAnchor; the default (and anything
+// unknown) anchors to the text.
+func anchorFrom(v string) Anchor {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "margin":
+		return AnchorMargin
+	case "page":
+		return AnchorPage
+	default:
+		return AnchorText
+	}
+}
+
+// tableContext is the table-wide state every cell needs to resolve its own
+// formatting: the table's inline borders, its resolved named style (and whether
+// it has one), the active conditional-region flags, the table-level cell margins,
+// and the grid's size.
+type tableContext struct {
+	borders   *xmlBorders
+	style     resolvedTableStyle
+	haveStyle bool
+	flags     tblLookFlags
+	cellMar   *xmlTcMar
+	nRows     int
+	nCols     int
 }
 
 func tableGridColCount(xt xmlTable) int {
@@ -1298,52 +1707,122 @@ func tblIndPt(ind *xmlTblInd) float64 {
 	return dxaToPt(ind.W)
 }
 
-func buildRow(xr xmlRow, inlineBorders *xmlBorders, style resolvedTableStyle, haveStyle bool, flags tblLookFlags, rowIdx, nRows, nCols int, sc styleContext) Row {
+func buildRow(xr xmlRow, tc tableContext, rowIdx int, sc styleContext) Row {
 	cells := make([]Cell, 0, len(xr.Cells))
 	colStart := 0
 	for _, xc := range xr.Cells {
-		cells = append(cells, buildCell(xc, inlineBorders, style, haveStyle, flags, rowIdx, colStart, nRows, nCols, sc))
+		cells = append(cells, buildCell(xc, tc, rowIdx, colStart, sc))
 		colStart += gridSpan(xc.Props)
 	}
-	return Row{Cells: cells}
+	row := Row{Cells: cells}
+	if xr.Props != nil {
+		row.Header = xr.Props.TblHeader.on()
+		row.HeightPt, row.HeightRule = rowHeightFrom(xr.Props.Height)
+	}
+	return row
 }
 
-func buildCell(xc xmlCell, inlineBorders *xmlBorders, style resolvedTableStyle, haveStyle bool, flags tblLookFlags, rowIdx, colStart, nRows, nCols int, sc styleContext) Cell {
-	var styleBorders *xmlBorders
-	var styleShd *xmlShd
-	if haveStyle {
-		styleBorders, styleShd = styleContributionForCell(style, flags, rowIdx, colStart, nRows, nCols)
+// rowHeightFrom resolves w:trHeight into a height and its rule. An absent
+// height, an unparseable one, or w:hRule="auto" all leave the row auto-sized.
+func rowHeightFrom(h *xmlTrHeight) (float64, RowHeightRule) {
+	if h == nil {
+		return 0, RowHeightAuto
 	}
-	tblBorders := mergeBorders(inlineBorders, styleBorders)
+	pt := dxaToPt(h.Val)
+	if pt <= 0 {
+		return 0, RowHeightAuto
+	}
+	switch strings.ToLower(strings.TrimSpace(h.HRule)) {
+	case "exact":
+		return pt, RowHeightExact
+	case "atleast", "": // an absent rule with a height behaves as a minimum
+		return pt, RowHeightAtLeast
+	default: // "auto"
+		return 0, RowHeightAuto
+	}
+}
+
+func buildCell(xc xmlCell, tc tableContext, rowIdx, colStart int, sc styleContext) Cell {
+	var contrib tableStyleContribution
+	if tc.haveStyle {
+		contrib = styleContributionForCell(tc, rowIdx, colStart)
+	}
+	// The table style's paragraph/run formatting is a tier of its own, under the
+	// paragraph and character styles but over w:docDefaults - so a style whose
+	// firstRow region is bold reaches this cell's runs without overriding a
+	// paragraph that says otherwise.
+	cellSC := sc
+	cellSC.tablePPr = contrib.PPr
+	cellSC.tableRPr = contrib.RPr
+
+	span := gridSpan(xc.Props)
+	// Table-level borders (inline over the style's) decide a cell's sides by its
+	// position; the style's cell-level borders land on it whatever its position,
+	// under its own inline w:tcBorders.
+	tblBorders := mergeBorders(tc.borders, contrib.TblBorders)
+	cellBorders := mergeBorders(tcBordersOf(xc.Props), contrib.CellBorders)
+	pos := cellPosition{
+		firstRow: rowIdx == 0,
+		lastRow:  rowIdx == tc.nRows-1,
+		firstCol: colStart == 0,
+		lastCol:  colStart+span >= tc.nCols,
+	}
 	cell := Cell{
-		Paragraphs: buildParagraphSlice(xc.Paragraphs, sc),
-		ColSpan:    gridSpan(xc.Props),
-		VMerge:     vMergeState(xc.Props),
-		Borders:    resolveCellBorders(tblBorders, tcBordersOf(xc.Props)),
-		Shading:    cellShading(shdOf(xc.Props), styleShd),
+		Paragraphs:    buildParagraphSlice(xc.Paragraphs, cellSC),
+		ColSpan:       span,
+		VMerge:        vMergeState(xc.Props),
+		Borders:       resolveCellBorders(tblBorders, cellBorders, pos),
+		Shading:       resolveShading(coalesceShd(shdOf(xc.Props), contrib.Shd), sc.theme),
+		Margins:       resolveCellMargins(mergeTcMar(tcMarOf(xc.Props), tc.cellMar)),
+		TextDirection: textDirectionFrom(textDirOf(xc.Props)),
+		VAlign:        vAlignFrom(vAlignOf(xc.Props)),
 	}
 	if len(xc.NestedTables) > 0 {
-		nested := buildTable(xc.NestedTables[0], sc)
+		nested := buildTable(xc.NestedTables[0], cellSC)
 		cell.Nested = &nested
 	}
 	return cell
 }
 
-// styleContributionForCell layers base + conditional regions for one cell.
-// Priority (low→high): base → h-band → v-band → first/last col → first/last row.
-func styleContributionForCell(style resolvedTableStyle, flags tblLookFlags, rowIdx, colStart, nRows, nCols int) (*xmlBorders, *xmlShd) {
-	borders := style.Borders
-	shd := style.Shd
+// tableStyleContribution is what a table style gives one cell: its table-level
+// borders (whose inside grid lines still only apply between cells) and its
+// cell-level ones (which land on the cell whatever its position), its shading,
+// and the paragraph and run formatting of the regions covering it.
+type tableStyleContribution struct {
+	TblBorders  *xmlBorders
+	CellBorders *xmlBorders
+	Shd         *xmlShd
+	PPr         *xmlPPr
+	RPr         *xmlRPr
+}
+
+// styleContributionForCell layers the style's base and conditional regions for
+// one cell. Priority (low→high): base → whole table → h-band → v-band →
+// first/last col → first/last row → the corner cell, which Word lets win over
+// every other region.
+func styleContributionForCell(tc tableContext, rowIdx, colStart int) tableStyleContribution {
+	style, flags, nRows, nCols := tc.style, tc.flags, tc.nRows, tc.nCols
+	out := tableStyleContribution{
+		TblBorders:  style.Borders,
+		CellBorders: style.CellBorders,
+		Shd:         style.Shd,
+		PPr:         style.PPr,
+		RPr:         style.RPr,
+	}
 
 	apply := func(typ string) {
 		r, ok := style.Regions[typ]
 		if !ok {
 			return
 		}
-		borders = mergeBorders(r.Borders, borders)
-		shd = coalesceShd(r.Shd, shd)
+		out.TblBorders = mergeBorders(r.TblBorders, out.TblBorders)
+		out.CellBorders = mergeBorders(r.CellBorders, out.CellBorders)
+		out.Shd = coalesceShd(r.Shd, out.Shd)
+		out.PPr = mergePPr(r.PPr, out.PPr)
+		out.RPr = mergeRPr(r.RPr, out.RPr)
 	}
 
+	apply("wholeTable")
 	if !flags.NoHBand {
 		if band := horzBandType(rowIdx, nRows, flags, style.RowBandSize); band != "" {
 			apply(band)
@@ -1354,19 +1833,95 @@ func styleContributionForCell(style resolvedTableStyle, flags tblLookFlags, rowI
 			apply(band)
 		}
 	}
-	if flags.FirstCol && colStart == 0 {
+	firstCol := flags.FirstCol && colStart == 0
+	lastCol := flags.LastCol && nCols > 0 && colStart == nCols-1
+	firstRow := flags.FirstRow && rowIdx == 0
+	lastRow := flags.LastRow && nRows > 0 && rowIdx == nRows-1
+	if firstCol {
 		apply("firstCol")
 	}
-	if flags.LastCol && nCols > 0 && colStart == nCols-1 {
+	if lastCol {
 		apply("lastCol")
 	}
-	if flags.FirstRow && rowIdx == 0 {
+	if firstRow {
 		apply("firstRow")
 	}
-	if flags.LastRow && nRows > 0 && rowIdx == nRows-1 {
+	if lastRow {
 		apply("lastRow")
 	}
-	return borders, shd
+	switch {
+	case firstRow && firstCol:
+		apply("nwCell")
+	case firstRow && lastCol:
+		apply("neCell")
+	case lastRow && firstCol:
+		apply("swCell")
+	case lastRow && lastCol:
+		apply("seCell")
+	}
+	return out
+}
+
+// defaultCellMargins are Word's own: 108 dxa (5.4 pt) left and right, none top
+// and bottom.
+var defaultCellMargins = CellMargins{LeftPt: 5.4, RightPt: 5.4}
+
+// resolveCellMargins turns an already-merged w:tcMar/w:tblCellMar into margins,
+// falling back per side to Word's defaults. A side declared as a percentage
+// keeps its percentage: it is resolved against the table's width at layout time.
+func resolveCellMargins(m *xmlTcMar) CellMargins {
+	out := defaultCellMargins
+	if m == nil {
+		return out
+	}
+	side := func(w *xmlTblWidth, defPt float64) (float64, float64) {
+		if w == nil {
+			return defPt, 0
+		}
+		pt, pct := tblWidthValue(w)
+		if pct > 0 {
+			return 0, pct
+		}
+		if strings.TrimSpace(w.W) == "" { // a side with no width at all keeps the default
+			return defPt, 0
+		}
+		return pt, 0
+	}
+	out.TopPt, out.TopPct = side(m.Top, out.TopPt)
+	out.BottomPt, out.BottomPct = side(m.Bottom, out.BottomPt)
+	out.LeftPt, out.LeftPct = side(m.Left, out.LeftPt)
+	out.RightPt, out.RightPct = side(m.Right, out.RightPt)
+	return out
+}
+
+// textDirectionFrom resolves w:textDirection; anything but the two vertical
+// modes (including the default "lrTb") is horizontal.
+func textDirectionFrom(v *xmlVal) TextDirection {
+	if v == nil {
+		return TextDirectionHorizontal
+	}
+	switch strings.ToLower(strings.TrimSpace(v.Val)) {
+	case "btlr", "blrt": // bottom-to-top
+		return TextDirectionBTLR
+	case "tbrl", "tbrlv", "tbv": // top-to-bottom
+		return TextDirectionTBRL
+	default:
+		return TextDirectionHorizontal
+	}
+}
+
+func tcMarOf(tcPr *xmlTcPr) *xmlTcMar {
+	if tcPr == nil {
+		return nil
+	}
+	return tcPr.Mar
+}
+
+func textDirOf(tcPr *xmlTcPr) *xmlVal {
+	if tcPr == nil {
+		return nil
+	}
+	return tcPr.TextDir
 }
 
 func horzBandType(rowIdx, nRows int, flags tblLookFlags, bandSize int) string {
@@ -1446,21 +2001,61 @@ func shdOf(tcPr *xmlTcPr) *xmlShd {
 	return tcPr.Shd
 }
 
-func resolveCellBorders(tblBorders, tcBorders *xmlBorders) CellBorders {
-	var tt, tb, tl, tr *xmlBorder
+// cellPosition is where a cell sits in the grid, which decides whether a side of
+// it takes the table's outer border or its inside grid line.
+type cellPosition struct {
+	firstRow, lastRow, firstCol, lastCol bool
+}
+
+// resolveCellBorders resolves each side from the cell's own w:tcBorders over the
+// table's: an edge of the table takes the matching outer border (w:top, w:left,
+// …), an edge between two cells takes the inside grid line (w:insideH/w:insideV).
+// The two diagonals come from the cell alone: a table has no diagonal to inherit.
+func resolveCellBorders(tblBorders, tcBorders *xmlBorders, pos cellPosition) CellBorders {
+	var tbl, cell xmlBorders
 	if tblBorders != nil {
-		tt, tb, tl, tr = tblBorders.Top, tblBorders.Bottom, tblBorders.Left, tblBorders.Right
+		tbl = *tblBorders
 	}
-	var ct, cb, cl, cr *xmlBorder
 	if tcBorders != nil {
-		ct, cb, cl, cr = tcBorders.Top, tcBorders.Bottom, tcBorders.Left, tcBorders.Right
+		cell = *tcBorders
+	}
+	outerOrInside := func(outer, inside *xmlBorder, atEdge bool) *xmlBorder {
+		if atEdge {
+			return outer
+		}
+		return inside
 	}
 	return CellBorders{
-		Top:    resolveBorderSide(tt, ct),
-		Bottom: resolveBorderSide(tb, cb),
-		Left:   resolveBorderSide(tl, cl),
-		Right:  resolveBorderSide(tr, cr),
+		Top:      resolveBorderSide(outerOrInside(tbl.Top, tbl.InsideH, pos.firstRow), cell.Top),
+		Bottom:   resolveBorderSide(outerOrInside(tbl.Bottom, tbl.InsideH, pos.lastRow), cell.Bottom),
+		Left:     resolveBorderSide(outerOrInside(tbl.Left, tbl.InsideV, pos.firstCol), cell.Left),
+		Right:    resolveBorderSide(outerOrInside(tbl.Right, tbl.InsideV, pos.lastCol), cell.Right),
+		DiagDown: resolveBorderSide(nil, cell.TL2BR),
+		DiagUp:   resolveBorderSide(nil, cell.TR2BL),
 	}
+}
+
+// vAlignFrom resolves w:vAlign; anything but center/bottom (including the
+// default "top") puts the content at the cell's top.
+func vAlignFrom(v *xmlVal) VerticalAlign {
+	if v == nil {
+		return VAlignTop
+	}
+	switch strings.ToLower(strings.TrimSpace(v.Val)) {
+	case "center":
+		return VAlignCenter
+	case "bottom":
+		return VAlignBottom
+	default:
+		return VAlignTop
+	}
+}
+
+func vAlignOf(tcPr *xmlTcPr) *xmlVal {
+	if tcPr == nil {
+		return nil
+	}
+	return tcPr.VAlign
 }
 
 // defaultBorderWidthPt is used when a declared border omits w:sz (or it's
@@ -1490,79 +2085,87 @@ func resolveBorderSide(tblSide, cellSide *xmlBorder) BorderSide {
 	}
 }
 
-// cellShading resolves a cell's shading, falling back to the table style's
-// base shading (styleShd) when the cell declares none.
-func cellShading(shd, styleShd *xmlShd) string {
-	if shd == nil {
-		shd = styleShd
-	}
-	if shd == nil {
-		return ""
-	}
-	return normalizeShadingColor(shd.Fill)
-}
-
 // normalizeBorderColor turns a raw OOXML border color into "#RRGGBB",
-// defaulting "auto" or an absent value to black - a border with a declared
-// style still needs a visible color.
+// defaulting "auto", an absent, or an unusable value to black - a border with a
+// declared style still needs a visible color.
 func normalizeBorderColor(v string) string {
-	v = strings.TrimSpace(v)
-	if v == "" || strings.EqualFold(v, "auto") {
-		return "#000000"
+	if hex, ok := sRGBHex(v); ok {
+		return hex
 	}
-	return "#" + strings.ToUpper(v)
+	return "#000000"
 }
 
-// normalizeShadingColor turns a raw OOXML fill color into "#RRGGBB", or ""
-// for "auto"/"nil"/absent - which mean no shading at all, not black.
-func normalizeShadingColor(v string) string {
-	v = strings.TrimSpace(v)
-	if v == "" || strings.EqualFold(v, "auto") || strings.EqualFold(v, "nil") {
-		return ""
-	}
-	return "#" + strings.ToUpper(v)
-}
-
-// resolveColumnWidths reads column widths from w:tblGrid/w:gridCol; when
-// absent, each column's width falls back to the widest single-span w:tcW
-// seen for that column (cells contributing via gridSpan aren't attributable
-// to one column, so they don't affect the fallback).
-func resolveColumnWidths(xt xmlTable) []float64 {
+// resolveColumnWidths reads column widths from w:tblGrid/w:gridCol; a column the
+// grid does not size (or does not mention at all) falls back to the widest
+// single-span w:tcW seen for it - in points when that w:tcW is a dxa width, or
+// as a percentage of the available width when it is a "pct" one (cells
+// contributing via gridSpan aren't attributable to one column, so they don't
+// affect the fallback). A column with neither is left at zero: the layout sizes
+// it from its content.
+func resolveColumnWidths(xt xmlTable) (widths, percents []float64) {
 	if xt.Grid != nil && len(xt.Grid.Cols) > 0 {
-		widths := make([]float64, len(xt.Grid.Cols))
+		widths = make([]float64, len(xt.Grid.Cols))
 		for i, c := range xt.Grid.Cols {
 			widths[i] = dxaToPt(c.W)
 		}
-		return widths
 	}
+	percents = make([]float64, len(widths))
 
-	var widths []float64
 	for _, row := range xt.Rows {
 		col := 0
 		for _, cell := range row.Cells {
 			span := gridSpan(cell.Props)
 			for len(widths) < col+span {
 				widths = append(widths, 0)
+				percents = append(percents, 0)
 			}
-			if span == 1 {
-				if w := cellDxaWidth(cell.Props); w > widths[col] {
-					widths[col] = w
-				}
+			if span == 1 && widths[col] == 0 {
+				pt, pct := cellWidth(cell.Props)
+				widths[col] = math.Max(widths[col], pt)
+				percents[col] = math.Max(percents[col], pct)
 			}
 			col += span
 		}
 	}
-	return widths
+	return widths, percents
 }
 
-func cellDxaWidth(tcPr *xmlTcPr) float64 {
-	if tcPr == nil || tcPr.TcW == nil {
-		return 0
+// cellWidth reads a cell's w:tcW; see tblWidthValue.
+func cellWidth(tcPr *xmlTcPr) (pt, pct float64) {
+	if tcPr == nil {
+		return 0, 0
 	}
-	if t := strings.ToLower(strings.TrimSpace(tcPr.TcW.Type)); t != "" && t != "dxa" {
-		return 0
+	return tblWidthValue(tcPr.TcW)
+}
+
+// tblWidthValue reads a w:w/w:type pair (w:tcW, w:tblW, a w:tcMar side) as
+// either a width in points (type dxa, the default) or a percentage of the
+// reference width (type pct, in fiftieths of a percent, or written with a
+// trailing %). An "auto" width is neither.
+func tblWidthValue(w *xmlTblWidth) (pt, pct float64) {
+	if w == nil {
+		return 0, 0
 	}
-	return dxaToPt(tcPr.TcW.W)
+	v := strings.TrimSpace(w.W)
+	switch strings.ToLower(strings.TrimSpace(w.Type)) {
+	case "", "dxa":
+		return dxaToPt(v), 0
+	case "pct":
+		if s, ok := strings.CutSuffix(v, "%"); ok {
+			f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+			if err != nil || f <= 0 {
+				return 0, 0
+			}
+			return 0, f
+		}
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil || f <= 0 {
+			return 0, 0
+		}
+		return 0, f / 50 // fiftieths of a percent
+	default: // "auto", "nil"
+		return 0, 0
+	}
 }
 
 // dxaToPt converts twentieths of a point (the unit w:w/w:tblGrid use) to points.
@@ -1650,7 +2253,27 @@ type xmlTheme struct {
 }
 
 type xmlThemeElements struct {
-	ClrScheme xmlClrScheme `xml:"http://schemas.openxmlformats.org/drawingml/2006/main clrScheme"`
+	ClrScheme  xmlClrScheme  `xml:"http://schemas.openxmlformats.org/drawingml/2006/main clrScheme"`
+	FontScheme xmlFontScheme `xml:"http://schemas.openxmlformats.org/drawingml/2006/main fontScheme"`
+}
+
+// xmlFontScheme is <a:fontScheme>: the major (headings) and minor (body) font
+// collections a w:rFonts theme reference resolves against.
+type xmlFontScheme struct {
+	Major xmlFontCollection `xml:"http://schemas.openxmlformats.org/drawingml/2006/main majorFont"`
+	Minor xmlFontCollection `xml:"http://schemas.openxmlformats.org/drawingml/2006/main minorFont"`
+}
+
+// xmlFontCollection is one font collection's Latin, East-Asian and
+// complex-script typefaces.
+type xmlFontCollection struct {
+	Latin xmlTypeface `xml:"http://schemas.openxmlformats.org/drawingml/2006/main latin"`
+	EA    xmlTypeface `xml:"http://schemas.openxmlformats.org/drawingml/2006/main ea"`
+	CS    xmlTypeface `xml:"http://schemas.openxmlformats.org/drawingml/2006/main cs"`
+}
+
+type xmlTypeface struct {
+	Typeface string `xml:"typeface,attr"`
 }
 
 // xmlClrScheme models the twelve named color-scheme slots. dk1/lt1 typically
@@ -1722,11 +2345,41 @@ func buildThemeMap(t *xmlTheme) map[string]string {
 	return m
 }
 
+// buildThemeFontMap turns a parsed theme's font scheme into a slot→typeface map
+// ("majorlatin", "minorea", …), the keys a w:rFonts theme reference resolves to.
+// Slots with no declared typeface are omitted, so an unresolved reference falls
+// back to the default font.
+func buildThemeFontMap(t *xmlTheme) map[string]string {
+	m := make(map[string]string)
+	if t == nil {
+		return m
+	}
+	fs := t.Elements.FontScheme
+	for slot, tf := range map[string]xmlTypeface{
+		"majorlatin": fs.Major.Latin, "majorea": fs.Major.EA, "majorcs": fs.Major.CS,
+		"minorlatin": fs.Minor.Latin, "minorea": fs.Minor.EA, "minorcs": fs.Minor.CS,
+	} {
+		if name := strings.TrimSpace(tf.Typeface); name != "" {
+			m[slot] = name
+		}
+	}
+	return m
+}
+
 // --- List numbering (word/numbering.xml) ---
 
 type xmlNumbering struct {
-	AbstractNums []xmlAbstractNum `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main abstractNum"`
-	Nums         []xmlNum         `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main num"`
+	PicBullets   []xmlNumPicBullet `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main numPicBullet"`
+	AbstractNums []xmlAbstractNum  `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main abstractNum"`
+	Nums         []xmlNum          `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main num"`
+}
+
+// xmlNumPicBullet is <w:numPicBullet>: an image a bullet level can use as its
+// marker, referenced by w:lvlPicBulletId. It is always a VML picture, even in
+// files Word writes today.
+type xmlNumPicBullet struct {
+	ID   string   `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main numPicBulletId,attr"`
+	Pict *xmlPict `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main pict"`
 }
 
 type xmlAbstractNum struct {
@@ -1735,12 +2388,15 @@ type xmlAbstractNum struct {
 }
 
 type xmlLvl struct {
-	Ilvl    string  `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main ilvl,attr"`
-	Start   *xmlVal `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main start"`
-	NumFmt  *xmlVal `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main numFmt"`
-	LvlText *xmlVal `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main lvlText"`
-	PPr     *xmlPPr `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main pPr"`
-	RPr     *xmlRPr `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main rPr"`
+	Ilvl        string    `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main ilvl,attr"`
+	Start       *xmlVal   `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main start"`
+	NumFmt      *xmlVal   `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main numFmt"`
+	LvlText     *xmlVal   `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main lvlText"`
+	IsLgl       *xmlOnOff `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main isLgl"`
+	Suff        *xmlVal   `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main suff"`
+	PicBulletID *xmlVal   `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main lvlPicBulletId"`
+	PPr         *xmlPPr   `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main pPr"`
+	RPr         *xmlRPr   `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main rPr"`
 }
 
 type xmlNum struct {
@@ -1756,14 +2412,19 @@ type xmlLvlOverride struct {
 }
 
 // numLevel is one resolved list level: its start value, number format, the
-// lvlText template (with %1..%9 placeholders), the level's hanging indent, and
-// the marker run's rPr.
+// lvlText template (with %1..%9 placeholders), whether it renders every
+// referenced level as a decimal (w:isLgl, "legal" numbering), what separates the
+// marker from the text (w:suff), the level's hanging indent, the marker run's
+// rPr, and - for a picture bullet - the marker image.
 type numLevel struct {
 	start   int
 	numFmt  string
 	lvlText string
+	isLgl   bool
+	suff    string
 	ind     *xmlInd
 	rpr     *xmlRPr
+	image   *Image
 }
 
 // numDef is a resolved list (w:num): its levels keyed by ilvl.
@@ -1771,11 +2432,15 @@ type numDef struct {
 	levels map[int]numLevel
 }
 
-// marker is a resolved list marker returned by numberingState.advance.
+// marker is a resolved list marker returned by numberingState.advance: the
+// formatted text (or a picture bullet image), the level's indent, the marker
+// run's properties, and the suffix separating it from the paragraph's text.
 type marker struct {
-	text string
-	ind  *xmlInd
-	rpr  *xmlRPr
+	text  string
+	image *Image
+	suff  string
+	ind   *xmlInd
+	rpr   *xmlRPr
 }
 
 // numberingState holds the static list definitions plus the mutable
@@ -1799,6 +2464,16 @@ func newNumberingState(defs map[string]numDef) *numberingState {
 		counters: make(map[string]map[int]int),
 		used:     make(map[string]map[int]bool),
 	}
+}
+
+// fork returns a state over the same list definitions with its own counters,
+// used for header/footer parts: a numbered list there is independent of the
+// body's, so building one cannot advance the body's counters (nil-safe).
+func (ns *numberingState) fork() *numberingState {
+	if ns == nil {
+		return nil
+	}
+	return newNumberingState(ns.defs)
 }
 
 // advance updates numID's counter for a paragraph at level ilvl and returns the
@@ -1831,18 +2506,29 @@ func (ns *numberingState) advance(numID string, ilvl int) (marker, bool) {
 		}
 	}
 	return marker{
-		text: formatMarker(def, ilvl, ns.counters[numID]),
-		ind:  lvl.ind,
-		rpr:  lvl.rpr,
+		text:  formatMarker(def, ilvl, ns.counters[numID]),
+		image: lvl.image,
+		suff:  lvl.suff,
+		ind:   lvl.ind,
+		rpr:   lvl.rpr,
 	}, true
 }
 
 // buildNumbering resolves word/numbering.xml into numId→numDef: each num's
 // abstractNum levels, with lvlOverride start/fmt applied on top (nil-safe).
-func buildNumbering(xn *xmlNumbering) map[string]numDef {
+// picBullets resolves a level's w:lvlPicBulletId into its marker image; it is
+// built from the numbering part's own relationships, which is where a picture
+// bullet's media reference lives.
+func buildNumbering(xn *xmlNumbering, ir *imageResolver) map[string]numDef {
 	out := make(map[string]numDef)
 	if xn == nil {
 		return out
+	}
+	bullets := make(map[string]*Image)
+	for _, pb := range xn.PicBullets {
+		if img := pb.Pict.image(ir); img != nil {
+			bullets[strings.TrimSpace(pb.ID)] = img
+		}
 	}
 	abstracts := make(map[string]xmlAbstractNum)
 	for _, a := range xn.AbstractNums {
@@ -1859,7 +2545,7 @@ func buildNumbering(xn *xmlNumbering) map[string]numDef {
 		}
 		levels := make(map[int]numLevel)
 		for _, l := range a.Levels {
-			if idx, lv, ok := parseLevel(l); ok {
+			if idx, lv, ok := parseLevel(l, bullets); ok {
 				levels[idx] = lv
 			}
 		}
@@ -1870,7 +2556,7 @@ func buildNumbering(xn *xmlNumbering) map[string]numDef {
 			}
 			lv := levels[idx] // zero value when the abstract lacked this level
 			if ov.Lvl != nil {
-				if _, plv, ok := parseLevel(*ov.Lvl); ok {
+				if _, plv, ok := parseLevel(*ov.Lvl, bullets); ok {
 					lv = plv
 				}
 			}
@@ -1887,13 +2573,13 @@ func buildNumbering(xn *xmlNumbering) map[string]numDef {
 }
 
 // parseLevel resolves one w:lvl; ok is false when its w:ilvl is missing or
-// unparseable. Defaults: start 1, format decimal.
-func parseLevel(l xmlLvl) (int, numLevel, bool) {
+// unparseable. Defaults: start 1, format decimal, suffix tab.
+func parseLevel(l xmlLvl, bullets map[string]*Image) (int, numLevel, bool) {
 	idx, err := strconv.Atoi(strings.TrimSpace(l.Ilvl))
 	if err != nil {
 		return 0, numLevel{}, false
 	}
-	lv := numLevel{start: 1, numFmt: "decimal"}
+	lv := numLevel{start: 1, numFmt: "decimal", suff: "tab"}
 	if l.Start != nil {
 		if s, err := strconv.Atoi(strings.TrimSpace(l.Start.Val)); err == nil {
 			lv.start = s
@@ -1904,6 +2590,15 @@ func parseLevel(l xmlLvl) (int, numLevel, bool) {
 	}
 	if l.LvlText != nil {
 		lv.lvlText = l.LvlText.Val
+	}
+	if l.Suff != nil {
+		if s := strings.TrimSpace(l.Suff.Val); s != "" {
+			lv.suff = s
+		}
+	}
+	lv.isLgl = l.IsLgl.on()
+	if l.PicBulletID != nil {
+		lv.image = bullets[strings.TrimSpace(l.PicBulletID.Val)]
 	}
 	if l.RPr != nil {
 		lv.rpr = l.RPr
@@ -1916,10 +2611,16 @@ func parseLevel(l xmlLvl) (int, numLevel, bool) {
 
 // formatMarker substitutes %1..%9 in the level's lvlText with the counter
 // value of each referenced level, formatted per that level's numFmt. A bullet
-// level renders its literal lvlText (or "•" when empty); an unknown format
-// behaves as decimal.
+// level renders its literal lvlText (or "•" when empty, and nothing at all when
+// a picture bullet takes its place); an unknown format behaves as decimal. A
+// legal-numbering level (w:isLgl) renders every referenced level as a decimal,
+// however those levels are formatted themselves - so "Article I" numbering
+// becomes "1.1" inside a legal sub-level.
 func formatMarker(def numDef, ilvl int, counters map[int]int) string {
 	lvl := def.levels[ilvl]
+	if lvl.image != nil {
+		return ""
+	}
 	if strings.EqualFold(lvl.numFmt, "bullet") {
 		if lvl.lvlText == "" {
 			return "•"
@@ -1933,7 +2634,7 @@ func formatMarker(def numDef, ilvl int, counters map[int]int) string {
 			continue
 		}
 		fmtName := "decimal"
-		if kl, ok := def.levels[k]; ok {
+		if kl, ok := def.levels[k]; ok && !lvl.isLgl {
 			fmtName = kl.numFmt
 		}
 		s = strings.ReplaceAll(s, placeholder, formatNumber(counters[k], fmtName))

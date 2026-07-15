@@ -15,7 +15,10 @@ func TestMapFontFamily(t *testing.T) {
 		{"Times New Roman", fonts.Serif},
 		{"Georgia", fonts.Serif},
 		{"Garamond", fonts.Serif},
-		{"Calibri", fonts.Sans},
+		{"Calibri", fonts.Carlito},
+		{"Calibri Light", fonts.Carlito},
+		{"Cambria", fonts.Caladea},
+		{"Cambria Math", fonts.Caladea},
 		{"Arial", fonts.Sans},
 		{"", fonts.Sans},
 		{"Courier New", fonts.Mono},
@@ -39,7 +42,7 @@ func TestMapFontFamily(t *testing.T) {
 
 func TestTrivialRenderEmitsPDF(t *testing.T) {
 	r := newFPDFRenderer(testGeometry.WidthPt, testGeometry.HeightPt)
-	r.AddPage()
+	r.AddPage(testGeometry.WidthPt, testGeometry.HeightPt)
 	r.SetFont(fonts.Sans, true, false, true, 12)
 	r.DrawText(marginPt, 120, "hello")
 

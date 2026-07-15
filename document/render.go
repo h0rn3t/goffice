@@ -1,12 +1,14 @@
 // Rendering of a Document into a paginated PDF: text measurement, word-wrap,
-// per-run formatting, alignment and page breaks. The simplest entry points are
-// the Document methods WritePDF (to a file) and WritePDFTo (to an io.Writer);
-// ConvertToPdf exposes the same rendering as a reusable Converter.
+// per-run formatting, alignment, column and page breaks, headers and footers.
+// The simplest entry points are the Document methods WritePDF (to a file) and
+// WritePDFTo (to an io.Writer); ConvertToPdf exposes the same rendering as a
+// reusable Converter.
 package document
 
 import (
 	"fmt"
 	"io"
+	"math"
 	"os"
 )
 
@@ -42,9 +44,9 @@ func (c *Converter) Write(w io.Writer) error {
 	return r.Output(w)
 }
 
-// geometry returns the page geometry to render on: the document's own
-// (from w:sectPr) when present, else the A4/one-inch default - also used for a
-// nil document or one built without geometry (a non-positive width).
+// geometry returns the page geometry of the document's first section (from
+// w:sectPr), or the A4/one-inch default - also used for a nil document or one
+// built without geometry (a non-positive width).
 func (c *Converter) geometry() PageGeometry {
 	if c.doc == nil || c.doc.Geometry.WidthPt <= 0 {
 		return DefaultPageGeometry()
@@ -70,69 +72,270 @@ func (c *Converter) WriteToFile(path string) error {
 	return nil
 }
 
-// render lays every paragraph out across pages. It always emits at least one
-// page so the output is a valid PDF even for an empty or nil document.
+// sectionLayout is a Section resolved into the frames content flows through:
+// one page frame per column, left to right.
+type sectionLayout struct {
+	sec  Section
+	cols []page
+}
+
+// layoutSection places a section's columns across its content width. A section
+// with no usable column list gets one full-width column, so there is always a
+// frame to flow into.
+func layoutSection(s Section) sectionLayout {
+	base := pageFrom(s.Geometry)
+	cols := make([]page, 0, len(s.Columns))
+	x := base.originX
+	for _, c := range s.Columns {
+		if c.WidthPt <= 0 {
+			continue
+		}
+		cols = append(cols, page{originX: x, originY: base.originY, contentWidth: c.WidthPt, bottomLimit: base.bottomLimit})
+		x += c.WidthPt + c.SpaceAfterPt
+	}
+	if len(cols) == 0 {
+		cols = []page{base}
+	}
+	return sectionLayout{sec: s, cols: cols}
+}
+
+// startingAt returns the same section with its columns starting at y instead of
+// the top margin - what a continuous section break does: the new column layout
+// resumes at the cursor on the current page.
+func (sl sectionLayout) startingAt(y float64) sectionLayout {
+	cols := make([]page, len(sl.cols))
+	copy(cols, sl.cols)
+	for i := range cols {
+		cols[i].originY = y
+	}
+	return sectionLayout{sec: sl.sec, cols: cols}
+}
+
+// flow is the drawing cursor: which section and column content is flowing
+// through, where in it, and how to move on when the frame is full. A fixed flow
+// (header/footer content) never paginates - it draws where it is told and lets
+// oversized content overflow, since Word's own header growth is out of scope.
+type flow struct {
+	r             renderer
+	sec           sectionLayout
+	col           int
+	y             float64
+	atTop         bool
+	pageInSection int
+	fixed         bool
+}
+
+func (f *flow) frame() page { return f.sec.cols[f.col] }
+
+// newPage starts a page in the current section, draws its header and footer,
+// and puts the cursor at the top of the first column.
+func (f *flow) newPage() {
+	if f.fixed {
+		return
+	}
+	f.r.AddPage(f.sec.sec.Geometry.WidthPt, f.sec.sec.Geometry.HeightPt)
+	f.pageInSection++
+	drawHeaderFooter(f.r, f.sec, f.pageInSection)
+	f.col = 0
+	f.y = f.frame().originY
+	f.atTop = true
+}
+
+// breakFrame moves the cursor to the next column, or - past the last one - to a
+// new page.
+func (f *flow) breakFrame() {
+	if f.fixed {
+		return
+	}
+	if f.col+1 < len(f.sec.cols) {
+		f.col++
+		f.y = f.frame().originY
+		f.atTop = true
+		return
+	}
+	f.newPage()
+}
+
+// startSection switches the flow to sec. A continuous section break keeps the
+// current page and resumes its (possibly different) column layout at the
+// cursor; every other break type starts a new page.
+//
+// ponytail: continuous columns are filled top to bottom, not balanced across
+// the section's columns as Word does - balancing needs a second measuring pass
+// over the whole section.
+func (f *flow) startSection(sec sectionLayout) {
+	if sec.sec.Continuous {
+		f.sec = sec.startingAt(f.y)
+		f.col = 0
+		return
+	}
+	f.sec = sec
+	f.pageInSection = 0
+	f.newPage()
+}
+
+// render lays every body element out across pages and sections. It always emits
+// at least one page so the output is a valid PDF even for an empty or nil
+// document.
 func (c *Converter) render(r renderer) {
-	pg := pageFrom(c.geometry())
-	r.AddPage()
-	cursorY := pg.originY
-	atPageTop := true
+	secs := c.sections()
+	f := &flow{r: r, sec: secs[0]}
+	f.newPage()
 
 	if c.doc == nil {
 		return
 	}
-
-	for _, el := range c.doc.Body {
-		switch {
-		case el.Paragraph != nil:
-			cursorY, atPageTop = renderParagraph(r, *el.Paragraph, pg, cursorY, atPageTop)
-		case el.Table != nil:
-			cursorY, atPageTop = renderTable(r, *el.Table, pg, cursorY, atPageTop)
+	si := 0
+	for i, el := range c.doc.Body {
+		// A section ends *after* the paragraph carrying its w:sectPr, so the next
+		// section takes over at the first element beyond its End.
+		for si+1 < len(secs) && i >= secs[si].sec.End {
+			si++
+			f.startSection(secs[si])
 		}
+		renderElement(f, el)
 	}
 }
 
-// renderParagraph lays out and draws one top-level paragraph across the
-// content width (narrowed by the paragraph's own indent), paginating as
-// needed, and returns the cursor position after it. The paragraph's own
-// space-before/space-after (p.Props.Spacing) is added as plain cursor
-// advances with no dedicated overflow check of its own - a table's
-// surrounding vertical gap is produced entirely by its neighboring
-// paragraphs' spacing this way, with no changes needed in table.go.
-func renderParagraph(r renderer, p Paragraph, pg page, cursorY float64, atPageTop bool) (float64, bool) {
-	if p.Props.PageBreak && !atPageTop {
-		r.AddPage()
-		cursorY, atPageTop = pg.originY, true
+// sections returns the document's sections as drawable layouts, synthesizing a
+// single full-width one for a nil document (or a Document built without
+// sections, e.g. in tests).
+func (c *Converter) sections() []sectionLayout {
+	if c.doc == nil || len(c.doc.Sections) == 0 {
+		g := c.geometry()
+		return []sectionLayout{layoutSection(Section{
+			Geometry: g,
+			Columns:  []Column{{WidthPt: g.WidthPt - g.MarginLeftPt - g.MarginRightPt}},
+			End:      math.MaxInt,
+		})}
 	}
-	cursorY += p.Props.Spacing.BeforePt
+	out := make([]sectionLayout, len(c.doc.Sections))
+	for i, s := range c.doc.Sections {
+		out[i] = layoutSection(s)
+	}
+	return out
+}
 
-	innerX := pg.originX + p.Props.Indent.LeftPt
-	innerWidth := pg.contentWidth - p.Props.Indent.LeftPt - p.Props.Indent.RightPt
+func renderElement(f *flow, el BodyElement) {
+	switch {
+	case el.Paragraph != nil:
+		renderParagraph(f, *el.Paragraph)
+	case el.Table != nil:
+		renderTable(f, *el.Table)
+	}
+}
 
-	lines := layoutParagraph(r, p, innerWidth)
+// renderParagraph lays out and draws one paragraph across the current column
+// (narrowed by the paragraph's own indent), moving to the next column or page as
+// needed. The paragraph's own space-before/space-after is added as a plain
+// cursor advance with no overflow check of its own - a table's surrounding
+// vertical gap is produced entirely by its neighboring paragraphs' spacing this
+// way, with no changes needed in table.go.
+func renderParagraph(f *flow, p Paragraph) {
+	switch {
+	case p.Props.PageBreak && !f.atTop:
+		f.newPage()
+	case p.Props.ColumnBreak && !f.atTop:
+		f.breakFrame()
+	}
+	f.y += p.Props.Spacing.BeforePt
+
+	lines := layoutParagraph(f.r, p, f.frame().contentWidth-p.Props.Indent.LeftPt-p.Props.Indent.RightPt)
 	if len(lines) == 0 { // empty paragraph advances one line at its line spacing
-		cursorY, atPageTop = advance(r, pg, cursorY, atPageTop, lineHeightFor(defaultRenderSizePt, p.Props.Spacing))
-		return cursorY + p.Props.Spacing.AfterPt, atPageTop
+		h := lineHeightFor(defaultRenderSizePt, 0, p.Props.Spacing)
+		if f.y+h > f.frame().bottomLimit && !f.atTop {
+			f.breakFrame()
+		}
+		f.y += h
+		f.atTop = false
+		f.y += p.Props.Spacing.AfterPt
+		return
 	}
 
 	for i, ln := range lines {
-		if cursorY+ln.height > pg.bottomLimit && !atPageTop {
-			r.AddPage()
-			cursorY = pg.originY
+		if f.y+ln.height > f.frame().bottomLimit && !f.atTop {
+			f.breakFrame()
 		}
-		drawLine(r, ln, p.Props.Alignment, innerX, innerWidth, cursorY, i == len(lines)-1, p.Props.Indent.FirstLineOffsetPt, i == 0)
-		cursorY += ln.height
-		atPageTop = false
+		fr := f.frame()
+		innerX := fr.originX + p.Props.Indent.LeftPt
+		innerWidth := fr.contentWidth - p.Props.Indent.LeftPt - p.Props.Indent.RightPt
+		if p.Props.Shading != "" {
+			// Painted per line, before the text: consecutive lines tile into one
+			// unbroken block behind the paragraph, and a paragraph split across
+			// columns or pages is shaded on each of them.
+			f.r.FillRect(innerX, f.y, innerWidth, ln.height, p.Props.Shading)
+		}
+		drawLine(f.r, ln, p.Props.Alignment, innerX, innerWidth, f.y, i == len(lines)-1, p.Props.Indent.FirstLineOffsetPt, i == 0)
+		f.y += ln.height
+		f.atTop = false
 	}
-	return cursorY + p.Props.Spacing.AfterPt, atPageTop
+	f.y += p.Props.Spacing.AfterPt
 }
 
-// advance moves the cursor down by h, paginating first if the step would cross
-// the bottom margin. Used for blank (run-less) paragraphs.
-func advance(r renderer, pg page, cursorY float64, atPageTop bool, h float64) (float64, bool) {
-	if cursorY+h > pg.bottomLimit && !atPageTop {
-		r.AddPage()
-		return pg.originY + h, false
+// --- Headers and footers ---
+
+// drawHeaderFooter draws the section's header and footer on the page that has
+// just been added. On a title page (w:titlePg) the "first" parts replace the
+// default ones - and when the section declares none, the page simply gets no
+// header/footer, which is exactly what Word draws.
+func drawHeaderFooter(r renderer, sl sectionLayout, pageInSection int) {
+	s := sl.sec
+	hdr, ftr := s.Header, s.Footer
+	if s.TitlePage && pageInSection == 1 {
+		hdr, ftr = s.FirstHeader, s.FirstFooter
 	}
-	return cursorY + h, false
+	base := pageFrom(s.Geometry)
+	if len(hdr) > 0 {
+		drawBlock(r, hdr, base.originX, s.HeaderOffsetPt, base.contentWidth)
+	}
+	if len(ftr) > 0 {
+		// The footer sits above its distance from the bottom edge, so it is
+		// measured first and drawn from there: a two-line footer grows upward,
+		// as in Word, rather than off the page.
+		h := blockHeight(r, ftr, base.contentWidth)
+		drawBlock(r, ftr, base.originX, s.Geometry.HeightPt-s.FooterOffsetPt-h, base.contentWidth)
+	}
+}
+
+// drawBlock draws elements at a fixed origin, with no pagination of its own.
+func drawBlock(r renderer, elems []BodyElement, x, y, width float64) {
+	f := &flow{
+		r:     r,
+		fixed: true,
+		sec: sectionLayout{cols: []page{{
+			originX:      x,
+			originY:      y,
+			contentWidth: width,
+			bottomLimit:  math.Inf(1),
+		}}},
+		y:     y,
+		atTop: true,
+	}
+	for _, el := range elems {
+		renderElement(f, el)
+	}
+}
+
+// blockHeight measures what drawBlock would draw, without drawing it: how tall
+// the header/footer content is at the given width.
+func blockHeight(r renderer, elems []BodyElement, width float64) float64 {
+	var h float64
+	for _, el := range elems {
+		switch {
+		case el.Paragraph != nil:
+			p := *el.Paragraph
+			h += p.Props.Spacing.BeforePt + p.Props.Spacing.AfterPt
+			lines := layoutParagraph(r, p, width-p.Props.Indent.LeftPt-p.Props.Indent.RightPt)
+			if len(lines) == 0 {
+				h += lineHeightFor(defaultRenderSizePt, 0, p.Props.Spacing)
+				continue
+			}
+			for _, ln := range lines {
+				h += ln.height
+			}
+		case el.Table != nil:
+			h += layoutTable(r, *el.Table, width, math.Inf(1)).totalHeight
+		}
+	}
+	return h
 }

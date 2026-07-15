@@ -14,7 +14,7 @@ func mkRow(cells ...Cell) Row {
 
 func TestLayoutTable_ColumnOffsets(t *testing.T) {
 	tbl := Table{ColumnWidths: []float64{50, 30, 20}}
-	tl := layoutTable(&fakeRenderer{}, tbl)
+	tl := layoutTable(&fakeRenderer{}, tbl, contentWidthPt, contentHeightPt)
 
 	want := []float64{0, 50, 80}
 	for i, w := range want {
@@ -26,7 +26,7 @@ func TestLayoutTable_ColumnOffsets(t *testing.T) {
 
 func TestLayoutTable_ColumnOffsetsIncludeTableIndent(t *testing.T) {
 	tbl := Table{ColumnWidths: []float64{50, 30, 20}, IndentPt: 100}
-	tl := layoutTable(&fakeRenderer{}, tbl)
+	tl := layoutTable(&fakeRenderer{}, tbl, contentWidthPt, contentHeightPt)
 
 	want := []float64{100, 150, 180}
 	for i, w := range want {
@@ -47,15 +47,15 @@ func TestRenderTable_CellsAtColumnPositions(t *testing.T) {
 			),
 		},
 	}
-	renderTable(f, tbl, testPage, marginPt, true)
+	renderTable(testFlow(f), tbl)
 
 	if len(f.draws) != 2 {
 		t.Fatalf("expected 2 draws, got %d", len(f.draws))
 	}
-	if want := marginPt + cellPaddingPt; f.draws[0].x != want {
+	if want := marginPt; f.draws[0].x != want {
 		t.Errorf("cell A1 x = %.2f, want %.2f", f.draws[0].x, want)
 	}
-	if want := marginPt + 100 + cellPaddingPt; f.draws[1].x != want {
+	if want := marginPt + 100.0; f.draws[1].x != want {
 		t.Errorf("cell B1 x = %.2f, want %.2f", f.draws[1].x, want)
 	}
 }
@@ -71,12 +71,12 @@ func TestLayoutTable_RowHeightFitsTallestCell(t *testing.T) {
 			mkRow(mkCell(1, VMergeNone, tall), mkCell(1, VMergeNone, short)),
 		},
 	}
-	tl := layoutTable(&fakeRenderer{}, tbl)
+	tl := layoutTable(&fakeRenderer{}, tbl, contentWidthPt, contentHeightPt)
 
 	if got := len(tl.rows[0].cells[0].content.paragraphs[0].lines); got < 2 {
 		t.Fatalf("expected the narrow cell to wrap into multiple lines, got %d", got)
 	}
-	shortBoxHeight := tl.rows[0].cells[1].content.height + 2*cellPaddingPt
+	shortBoxHeight := tl.rows[0].cells[1].content.height
 	if tl.rows[0].height <= shortBoxHeight {
 		t.Fatalf("row height %.2f should exceed the short cell's own box height %.2f", tl.rows[0].height, shortBoxHeight)
 	}
@@ -95,7 +95,7 @@ func TestRenderTable_HorizontalMergeSpansCombinedWidthNoInteriorBorder(t *testin
 			}),
 		},
 	}
-	renderTable(f, tbl, testPage, marginPt, true)
+	renderTable(testFlow(f), tbl)
 
 	if len(f.strokes) != 1 {
 		t.Fatalf("expected exactly one border stroke (no interior border at the merge boundary), got %d", len(f.strokes))
@@ -115,12 +115,12 @@ func TestRenderTable_VerticalMergeSpansCombinedHeightAndSkipsContinueDraw(t *tes
 	}
 
 	f := &fakeRenderer{}
-	renderTable(f, tbl, testPage, marginPt, true)
+	renderTable(testFlow(f), tbl)
 	if len(f.draws) != 1 {
 		t.Fatalf("expected exactly one draw (the vMerge-continue cell must not redraw), got %d", len(f.draws))
 	}
 
-	tl := layoutTable(&fakeRenderer{}, tbl)
+	tl := layoutTable(&fakeRenderer{}, tbl, contentWidthPt, contentHeightPt)
 	got := tl.mergedHeight(0, 0)
 	want := tl.rows[0].height + tl.rows[1].height
 	if got != want {
@@ -134,7 +134,7 @@ func TestRenderTable_CellShadingFills(t *testing.T) {
 		ColumnWidths: []float64{100},
 		Rows:         []Row{mkRow(Cell{ColSpan: 1, Shading: "#D9D9D9"})},
 	}
-	renderTable(f, tbl, testPage, marginPt, true)
+	renderTable(testFlow(f), tbl)
 
 	if len(f.fills) != 1 {
 		t.Fatalf("expected one fill call, got %d", len(f.fills))
@@ -157,7 +157,7 @@ func TestRenderTable_BordersPerSide(t *testing.T) {
 		ColumnWidths: []float64{100},
 		Rows:         []Row{mkRow(Cell{ColSpan: 1, Borders: borders})},
 	}
-	renderTable(f, tbl, testPage, marginPt, true)
+	renderTable(testFlow(f), tbl)
 
 	if len(f.strokes) != 2 {
 		t.Fatalf("expected 2 border strokes (top+bottom only; left/right undeclared), got %d", len(f.strokes))
@@ -180,7 +180,7 @@ func TestRenderTable_PaginatesWithoutSplittingRows(t *testing.T) {
 		}))
 	}
 	tbl := Table{ColumnWidths: []float64{100}, Rows: rows}
-	renderTable(f, tbl, testPage, marginPt, true)
+	renderTable(testFlow(f), tbl)
 
 	if f.page < 2 {
 		t.Fatalf("expected the table to paginate across multiple pages, got %d", f.page)
@@ -200,12 +200,12 @@ func TestRenderTable_CellParagraphIndentShiftsText(t *testing.T) {
 		ColumnWidths: []float64{100},
 		Rows:         []Row{mkRow(indented)},
 	}
-	renderTable(f, tbl, testPage, marginPt, true)
+	renderTable(testFlow(f), tbl)
 
 	if len(f.draws) != 1 {
 		t.Fatalf("expected 1 draw, got %d", len(f.draws))
 	}
-	if want := marginPt + cellPaddingPt + 20.0; f.draws[0].x != want {
+	if want := marginPt + 20.0; f.draws[0].x != want {
 		t.Fatalf("indented cell text x = %.2f, want %.2f", f.draws[0].x, want)
 	}
 }
@@ -229,16 +229,16 @@ func TestRenderTable_NestedTableIndentIsIndependentOfParent(t *testing.T) {
 			Nested:     &inner,
 		})},
 	}
-	renderTable(f, outer, testPage, marginPt, true)
+	renderTable(testFlow(f), outer)
 
 	if len(f.draws) != 2 {
 		t.Fatalf("expected 2 draws (outer cell + nested table), got %d", len(f.draws))
 	}
-	wantOuterX := marginPt + 40 + cellPaddingPt
+	wantOuterX := marginPt + 40.0
 	if f.draws[0].x != wantOuterX {
 		t.Fatalf("outer cell text x = %.2f, want %.2f (shifted by the outer table's own indent)", f.draws[0].x, wantOuterX)
 	}
-	wantInnerX := f.draws[0].x + cellPaddingPt + 20
+	wantInnerX := f.draws[0].x + 20
 	if f.draws[1].x != wantInnerX {
 		t.Fatalf("nested cell text x = %.2f, want %.2f (own indent, additional to and independent of the parent's)", f.draws[1].x, wantInnerX)
 	}
@@ -261,7 +261,7 @@ func TestRenderTable_NestedTableRendersWithinParentCell(t *testing.T) {
 			Nested:     &inner,
 		})},
 	}
-	renderTable(f, outer, testPage, marginPt, true)
+	renderTable(testFlow(f), outer)
 
 	if len(f.draws) != 2 {
 		t.Fatalf("expected 2 draws (outer cell + nested table), got %d", len(f.draws))
@@ -269,11 +269,11 @@ func TestRenderTable_NestedTableRendersWithinParentCell(t *testing.T) {
 	if f.draws[0].text != "outer" || f.draws[1].text != "inner" {
 		t.Fatalf("draw text = %q, %q, want \"outer\", \"inner\"", f.draws[0].text, f.draws[1].text)
 	}
-	// The nested table sits inside the outer cell's padded content area, and
-	// its own cell adds one more padding level, so its text lands one
-	// cellPaddingPt to the right of the outer cell's own text.
-	if want := f.draws[0].x + cellPaddingPt; f.draws[1].x != want {
-		t.Fatalf("nested cell x = %.2f, want %.2f (outer text x + one cell padding)", f.draws[1].x, want)
+	// The nested table sits inside the outer cell's content area, so - with these
+	// hand-built cells declaring no margins - its text starts at the same x as the
+	// outer cell's own.
+	if want := f.draws[0].x; f.draws[1].x != want {
+		t.Fatalf("nested cell x = %.2f, want %.2f (the outer cell's content edge)", f.draws[1].x, want)
 	}
 	if f.draws[1].y <= f.draws[0].y {
 		t.Fatalf("expected the nested table drawn below the outer cell's own text (y=%.2f)", f.draws[0].y)

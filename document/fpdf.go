@@ -1,6 +1,7 @@
 package document
 
 import (
+	"bytes"
 	"io"
 	"strconv"
 	"strings"
@@ -15,6 +16,9 @@ import (
 // non-Latin scripts render as correct glyphs instead of PDF-core-font mojibake.
 type fpdfRenderer struct {
 	pdf *fpdf.Fpdf
+	// embedded tracks which Image.Name values are already registered with the
+	// backend, so a picture drawn on many pages is embedded once.
+	embedded map[string]bool
 }
 
 // utf8Styles are the style strings each embedded family is registered under,
@@ -45,7 +49,7 @@ func newFPDFRenderer(widthPt, heightPt float64) *fpdfRenderer {
 		}
 	}
 	pdf.SetFont(fonts.Sans, "", defaultRenderSizePt) // a font must be set before any text op
-	return &fpdfRenderer{pdf: pdf}
+	return &fpdfRenderer{pdf: pdf, embedded: make(map[string]bool)}
 }
 
 // defaultRenderSizePt is only the backend's initial font size; every run resets
@@ -77,11 +81,31 @@ func (r *fpdfRenderer) SetTextColor(colorHex string) {
 }
 
 func (r *fpdfRenderer) TextWidth(s string) float64 { return r.pdf.GetStringWidth(s) }
-func (r *fpdfRenderer) AddPage()                   { r.pdf.AddPage() }
+
+// AddPage starts a page of the requested size (each section brings its own, so
+// the size is passed per page rather than fixed at construction).
+func (r *fpdfRenderer) AddPage(widthPt, heightPt float64) {
+	r.pdf.AddPageFormat("P", fpdf.SizeType{Wd: widthPt, Ht: heightPt})
+}
+
 func (r *fpdfRenderer) DrawText(x, y float64, s string) {
 	if s != "" {
 		r.pdf.Text(x, y, s)
 	}
+}
+
+// DrawImage embeds img (once, keyed by its media part name) and draws it in the
+// given rectangle. An image the backend rejects (a corrupt or mislabeled blob)
+// leaves the fpdf error set, which Output reports.
+func (r *fpdfRenderer) DrawImage(x, y, w, h float64, img *Image) {
+	if img == nil || w <= 0 || h <= 0 {
+		return
+	}
+	if !r.embedded[img.Name] {
+		r.pdf.RegisterImageOptionsReader(img.Name, fpdf.ImageOptions{ImageType: img.Type}, bytes.NewReader(img.Data))
+		r.embedded[img.Name] = true
+	}
+	r.pdf.ImageOptions(img.Name, x, y, w, h, false, fpdf.ImageOptions{ImageType: img.Type}, 0, "")
 }
 
 func (r *fpdfRenderer) FillRect(x, y, w, h float64, colorHex string) {
@@ -102,6 +126,23 @@ func (r *fpdfRenderer) StrokeLine(x1, y1, x2, y2, widthPt float64, colorHex stri
 	r.pdf.SetLineWidth(widthPt)
 	r.pdf.Line(x1, y1, x2, y2)
 }
+
+// Rotate/RotateEnd bracket a rotated drawing block (a cell's vertical text).
+// fpdf's own rotation is counter-clockwise about the given point, which is the
+// convention the renderer interface documents.
+func (r *fpdfRenderer) Rotate(deg, x, y float64) {
+	r.pdf.TransformBegin()
+	r.pdf.TransformRotate(deg, x, y)
+}
+
+func (r *fpdfRenderer) RotateEnd() { r.pdf.TransformEnd() }
+
+// Clip/ClipEnd bracket a clipped drawing block (the cell of a fixed-height row).
+func (r *fpdfRenderer) Clip(x, y, w, h float64) {
+	r.pdf.ClipRect(x, y, w, h, false)
+}
+
+func (r *fpdfRenderer) ClipEnd() { r.pdf.ClipEnd() }
 
 func (r *fpdfRenderer) Output(w io.Writer) error {
 	if err := r.pdf.Error(); err != nil {
@@ -124,15 +165,21 @@ func parseHexColor(hex string) (r, g, b int, ok bool) {
 	return int(v >> 16 & 0xFF), int(v >> 8 & 0xFF), int(v & 0xFF), true
 }
 
-// mapFontFamily maps a Word font name to one of the three embedded Liberation
-// families: serif → Liberation Serif, monospace → Liberation Mono, else
-// Liberation Sans. Liberation is metric-compatible with Times New
-// Roman/Courier New/Arial, so line breaks stay close to Word's own, and its
-// Unicode coverage (incl. Cyrillic) renders correctly instead of as mojibake.
+// mapFontFamily maps a Word font name to one of the embedded families, each
+// metric-compatible with the Word font it stands in for so line breaks stay
+// close to Word's own and Unicode (incl. Cyrillic) renders instead of mojibake:
+// Calibri → Carlito, Cambria → Caladea, other serif → Liberation Serif,
+// monospace → Liberation Mono, else Liberation Sans. The Calibri/Cambria cases
+// come first because they are also serif/sans by shape and would otherwise fall
+// into the generic Liberation branches.
 func mapFontFamily(name string) string {
 	n := strings.ToLower(name)
 	switch {
-	case containsAny(n, "times", "serif", "georgia", "garamond", "roman", "cambria", "minion", "book",
+	case strings.Contains(n, "calibri"):
+		return fonts.Carlito
+	case strings.Contains(n, "cambria"):
+		return fonts.Caladea
+	case containsAny(n, "times", "serif", "georgia", "garamond", "roman", "minion", "book",
 		"constantia", "palatino", "baskerville", "didot", "playfair", "merriweather", "cardo",
 		"goudy", "caslon", "bodoni", "rockwell", "perpetua"):
 		return fonts.Serif

@@ -7,7 +7,10 @@ package docxtest
 
 import (
 	"archive/zip"
+	"bytes"
 	"fmt"
+	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"testing"
@@ -112,6 +115,47 @@ func Theme(clrSchemeInnerXML string) string {
     <a:clrScheme name="Test">` + clrSchemeInnerXML + `</a:clrScheme>
   </a:themeElements>
 </a:theme>`
+}
+
+// Rels wraps relationship entries (the <Relationship> children) into a full
+// .rels part, e.g. for word/_rels/document.xml.rels.
+func Rels(relationshipsXML string) string {
+	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+		relationshipsXML + `</Relationships>`
+}
+
+// Rel builds one <Relationship> of the given officeDocument type ("image",
+// "header", "footer", …) pointing at target (relative to the owning part).
+func Rel(id, typ, target string) string {
+	return `<Relationship Id="` + id +
+		`" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/` + typ +
+		`" Target="` + target + `"/>`
+}
+
+// Header wraps p/tbl children into a full word/headerN.xml part; Footer does the
+// same for word/footerN.xml.
+func Header(innerXML string) string { return hdrFtr("hdr", innerXML) }
+
+// Footer wraps p/tbl children into a full word/footerN.xml part.
+func Footer(innerXML string) string { return hdrFtr("ftr", innerXML) }
+
+func hdrFtr(root, innerXML string) string {
+	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:` + root + ` xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ` +
+		`xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
+		innerXML + `</w:` + root + `>`
+}
+
+// PNG returns the bytes of a valid w×h PNG, as a string so it can be dropped
+// straight into a part map alongside the XML parts.
+func PNG(t *testing.T, w, h int) string {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, w, h))); err != nil {
+		t.Fatalf("encode png fixture: %v", err)
+	}
+	return buf.String()
 }
 
 // Corrupt writes a file that is not a ZIP archive and returns its path.

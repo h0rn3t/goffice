@@ -404,6 +404,17 @@ func TestSections_EqualWidthColumns(t *testing.T) {
 	}
 }
 
+func TestSections_ColumnSeparatorFlag(t *testing.T) {
+	with := `<w:cols w:num="2" w:space="720" w:sep="1"/>`
+	without := `<w:cols w:num="2" w:space="720"/>`
+	if s := mustOpenWith(t, `<w:p/>`+sectPr(with), nil).Sections[0]; !s.Separator {
+		t.Error("w:sep=\"1\" must set Section.Separator")
+	}
+	if s := mustOpenWith(t, `<w:p/>`+sectPr(without), nil).Sections[0]; s.Separator {
+		t.Error("no w:sep must leave Section.Separator false")
+	}
+}
+
 func TestSections_SingleFullWidthColumnByDefault(t *testing.T) {
 	doc := mustOpenWith(t, `<w:p><w:r><w:t>x</w:t></w:r></w:p>`, nil)
 

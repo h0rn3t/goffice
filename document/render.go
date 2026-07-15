@@ -174,6 +174,7 @@ func (f *flow) newPage() {
 	f.pageInSection++
 	f.pageNo++
 	drawHeaderFooter(f.r, f.sec, f.pageInSection, f.pageNo)
+	drawColumnSeparators(f.r, f.sec)
 	f.col = 0
 	f.y = f.frame().originY
 	f.atTop = true
@@ -333,6 +334,25 @@ func drawHeaderFooter(r renderer, sl sectionLayout, pageInSection, pageNo int) {
 		// as in Word, rather than off the page.
 		h := blockHeight(r, ftr, base.contentWidth)
 		drawBlock(r, ftr, base.originX, s.Geometry.HeightPt-s.FooterOffsetPt-h, base.contentWidth, pageNo)
+	}
+}
+
+// columnSeparatorWidthPt is the thickness of the w:sep rule between columns;
+// Word draws a hairline, so this stays thin.
+const columnSeparatorWidthPt = 0.5
+
+// drawColumnSeparators draws the w:cols/@w:sep rule down the middle of each gap
+// between adjacent columns, full column height, on the page just added. A no-op
+// unless the section asked for separators and has more than one column.
+func drawColumnSeparators(r renderer, sl sectionLayout) {
+	if !sl.sec.Separator || len(sl.cols) < 2 {
+		return
+	}
+	for i := 0; i+1 < len(sl.cols); i++ {
+		left, right := sl.cols[i], sl.cols[i+1]
+		gapStart := left.originX + left.contentWidth
+		x := gapStart + (right.originX-gapStart)/2
+		r.StrokeLine(x, left.originY, x, left.bottomLimit, columnSeparatorWidthPt, "#000000")
 	}
 }
 

@@ -20,6 +20,7 @@ type xmlCols struct {
 	Num        string   `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main num,attr"`
 	Space      string   `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main space,attr"`
 	EqualWidth string   `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main equalWidth,attr"`
+	Sep        string   `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main sep,attr"`
 	Cols       []xmlCol `xml:"http://schemas.openxmlformats.org/wordprocessingml/2006/main col"`
 }
 
@@ -57,6 +58,9 @@ type Section struct {
 	// Columns always holds at least one column; a single full-width column is
 	// the default when the section declares no w:cols.
 	Columns []Column
+	// Separator draws a vertical rule down the middle of each inter-column gap
+	// (w:cols/@w:sep); only meaningful with more than one column.
+	Separator bool
 	// End is the exclusive index into Document.Body where this section ends -
 	// Body[Start:End] with Start being the previous section's End.
 	End int
@@ -105,6 +109,12 @@ func buildSection(sp *xmlSectPr, end int, p *pkg, sc styleContext) Section {
 	}
 	if sp == nil {
 		return s
+	}
+	if c := colsOf(sp); c != nil {
+		switch strings.ToLower(strings.TrimSpace(c.Sep)) {
+		case "1", "true", "on":
+			s.Separator = true
+		}
 	}
 	s.Continuous = sp.Type != nil && strings.EqualFold(strings.TrimSpace(sp.Type.Val), "continuous")
 	s.TitlePage = sp.TitlePg.on()

@@ -21,6 +21,37 @@ func docWithSection(sec Section, paras ...Paragraph) *Document {
 	return &Document{Body: body, Geometry: sec.Geometry, Sections: []Section{sec}}
 }
 
+func TestColumns_SeparatorRuleIsDrawnBetweenColumns(t *testing.T) {
+	f := &fakeRenderer{}
+	doc := docWithSection(Section{Columns: twoColumns(), Separator: true},
+		para(AlignLeft, false, run("x", 12)))
+	ConvertToPdf(doc).render(f)
+
+	if len(f.strokes) != 1 {
+		t.Fatalf("strokes = %d, want 1 (one rule between the two columns)", len(f.strokes))
+	}
+	s := f.strokes[0]
+	// Centered in the 20 pt gap after the first 200 pt column, full column height.
+	if wantX := marginPt + 200 + 10; s.x1 != wantX || s.x2 != wantX {
+		t.Errorf("separator x = (%.1f,%.1f), want %.1f centered in the gap", s.x1, s.x2, wantX)
+	}
+	if s.y1 != testPage.originY || s.y2 != testPage.bottomLimit {
+		t.Errorf("separator spans y %.1f..%.1f, want the full column %.1f..%.1f", s.y1, s.y2, testPage.originY, testPage.bottomLimit)
+	}
+	if s.color != "#000000" {
+		t.Errorf("separator color = %q, want black", s.color)
+	}
+}
+
+func TestColumns_NoSeparatorWhenNotRequested(t *testing.T) {
+	f := &fakeRenderer{}
+	doc := docWithSection(Section{Columns: twoColumns()}, para(AlignLeft, false, run("x", 12)))
+	ConvertToPdf(doc).render(f)
+	if len(f.strokes) != 0 {
+		t.Fatalf("strokes = %d, want 0 without w:sep", len(f.strokes))
+	}
+}
+
 // repeatParas is n identical single-word paragraphs, for filling a frame.
 func repeatParas(n int, text string) []Paragraph {
 	paras := make([]Paragraph, n)
